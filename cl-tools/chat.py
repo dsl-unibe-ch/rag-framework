@@ -55,7 +55,7 @@ def main():
 
             if use_openai:
                 responder = OpenAIResponder(data=formated_result, model=openai_model, 
-                                            prompt_template=prompt, query= user_query,cleint=openai_client)
+                                            prompt_template=prompt, query= user_query,client=openai_client)
                 responder.stream_response()
             else:
                 responder = Responder(data=formated_result, model=llm_model, prompt_template=prompt, query=user_query)

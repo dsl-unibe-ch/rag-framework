@@ -18,7 +18,7 @@ class ChromaRetriever:
     def retrieve(self, query: str):
         """Embeds the query and retrieves relevant documents from the collection."""
         try:
-            embedded_query = self.model.encode(query)
+            embedded_query = self.model.encode(query).tolist()
             results = self.collection.query(
                 query_embeddings=[embedded_query],
                 n_results=self.n_results

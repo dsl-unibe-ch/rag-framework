@@ -146,7 +146,7 @@ def chat_stream(request):
             model=openai_model,
             prompt_template=prompt,
             query=user_query,
-            cleint=openai_client
+            client=openai_client
         )
     else:
         responder = Responder(
@@ -175,13 +175,6 @@ def chat_stream(request):
                 user_query=user_query,
                 response=full_response,
             )
-
-
-        # After the model output finishes, yield one last "special" chunk
-        # so the client can parse out the retrieved docs. 
-        # E.g. we prefix with a known marker: "<|DOCS_JSON|>"
-        docs_json_str = json.dumps(doc_list_for_frontend)
-        yield f"<|DOCS_JSON|>{docs_json_str}"
 
     # -- 4) Return the streaming response
     return StreamingHttpResponse(

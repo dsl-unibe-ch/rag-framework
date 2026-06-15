@@ -1,0 +1,10 @@
+Django==6.0.6
+pdfplumber==0.11.10
+sentence-transformers==5.5.1
+chromadb==1.5.9
+nltk==3.9.4
+ollama==0.6.2
+openai==2.41.1
+python-dotenv==1.2.2
+django-environ==0.13.0
+tqdm==4.68.2

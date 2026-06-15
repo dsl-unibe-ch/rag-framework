@@ -115,7 +115,7 @@ class OpenAIResponder:
     A class to generate responses using the OpenAI API within a RAG framework.
     """
 
-    def __init__(self, data: str, model: str, prompt_template: str, query: str, cleint: openai.OpenAI) -> None:
+    def __init__(self, data: str, model: str, prompt_template: str, query: str, client: openai.OpenAI) -> None:
         """
         Initialize the OpenAIResponder instance.
 
@@ -129,7 +129,7 @@ class OpenAIResponder:
         self.model = model
         self.prompt_template = prompt_template
         self.query = query
-        self.cleint = cleint
+        self.client = client
         
         # Construct the final prompt
         self.prompt = prompt_template.format(data=self.data, query=self.query)
@@ -143,7 +143,7 @@ class OpenAIResponder:
         """
         try:
             # For ChatCompletion API
-            response = self.cleint.chat.completions.create(
+            response = self.client.chat.completions.create(
                 model=self.model,
                 messages=[
                     {"role": "system", "content": "You are a RAG system."},
@@ -163,7 +163,7 @@ class OpenAIResponder:
         Prints chunks to stdout as they arrive.
         """
         try:
-            response_stream = self.cleint.chat.completions.create(
+            response_stream = self.client.chat.completions.create(
                 model=self.model,
                 messages=[
                     {"role": "system", "content": "You are a RAG system."},
@@ -187,7 +187,7 @@ class OpenAIResponder:
         Returns a generator that yields chunks of the response text.
         """
         try:
-            response_stream = self.cleint.chat.completions.create(
+            response_stream = self.client.chat.completions.create(
                 model=self.model,
                 messages=[
                     {"role": "system", "content": "You are a RAG system."},
