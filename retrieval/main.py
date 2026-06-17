@@ -15,10 +15,18 @@ class ChromaRetriever:
         self.client = chromadb.PersistentClient(path=self.db_path)
         self.collection = self.client.get_collection(name=self.db_collection)
 
-    def retrieve(self, query: str):
-        """Embeds the query and retrieves relevant documents from the collection."""
+    def retrieve(self, query: str, *, embed_text: str | None = None):
+        """Embeds the query and retrieves relevant documents from the collection.
+
+        Args:
+            query: The user's original question.
+            embed_text: Optional text to embed instead of *query*.  Pass the
+                HyDE-generated hypothetical document here when HyDE is active.
+                Falls back to *query* when ``None``.
+        """
         try:
-            embedded_query = self.model.encode(query).tolist()
+            text_to_embed = embed_text if embed_text is not None else query
+            embedded_query = self.model.encode(text_to_embed).tolist()
             results = self.collection.query(
                 query_embeddings=[embedded_query],
                 n_results=self.n_results
@@ -89,10 +97,18 @@ class OpenAIChromaRetriever:
         self.client_db = chromadb.PersistentClient(path=self.db_path)
         self.collection = self.client_db.get_collection(name=self.db_collection)
 
-    def retrieve(self, query: str):
-        """Embeds the query using the injected OpenAI client and retrieves documents."""
+    def retrieve(self, query: str, *, embed_text: str | None = None):
+        """Embeds the query using the injected OpenAI client and retrieves documents.
+
+        Args:
+            query: The user's original question.
+            embed_text: Optional text to embed instead of *query*.  Pass the
+                HyDE-generated hypothetical document here when HyDE is active.
+                Falls back to *query* when ``None``.
+        """
         try:
-            clean_query = query.replace("\n", " ")
+            text_to_embed = embed_text if embed_text is not None else query
+            clean_query = text_to_embed.replace("\n", " ")
             
             response = self.client_openai.embeddings.create(
                 model=self.model_name,

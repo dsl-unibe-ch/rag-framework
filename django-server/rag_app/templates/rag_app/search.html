@@ -32,6 +32,11 @@
                 required
             >
             <br>
+            <label class="hyde-label" for="use_hyde_search" title="HyDE: generate a hypothetical answer first and embed that instead of your raw question.">
+                <input type="checkbox" id="use_hyde_search" name="use_hyde" value="1" {% if hyde_enabled %}checked{% endif %}>
+                HyDE
+            </label>
+            <br>
             <button type="submit" class="cta-button" id="search-button">Search</button>
         </div>
     </form>
@@ -46,6 +51,13 @@
     {% if submitted %}
         <div class="results">
             <h2>Search Results</h2>
+            {% if hyde_doc %}
+            <div class="hyde-info">
+                <p class="hyde-label-text">&#x1F4A1; Hypothetical document used for retrieval (HyDE):</p>
+                <a href="#" class="hyde-toggle-link" id="hyde-search-toggle">Show hypothetical document &#x25BC;</a>
+                <div id="hyde-search-content" class="hyde-content" style="display:none">{{ hyde_doc }}</div>
+            </div>
+            {% endif %}
             {% if data %}
                 {% for result in data %}
                     <div class="result-item">
@@ -72,7 +84,20 @@ document.getElementById('search-form').addEventListener('submit', function() {
     const loadingIndicator = document.getElementById('loading-indicator');
     const searchButton = document.getElementById('search-button');
     loadingIndicator.style.display = 'block';
-    searchButton.disabled = true; // Disable the button to prevent multiple clicks
+    searchButton.disabled = true;
 });
+
+const hydeToggle = document.getElementById('hyde-search-toggle');
+if (hydeToggle) {
+    hydeToggle.addEventListener('click', function(e) {
+        e.preventDefault();
+        const box = document.getElementById('hyde-search-content');
+        const hidden = box.style.display === 'none';
+        box.style.display = hidden ? 'block' : 'none';
+        hydeToggle.innerHTML = hidden
+            ? 'Hide hypothetical document &#x25B2;'
+            : 'Show hypothetical document &#x25BC;';
+    });
+}
 </script>
 {% endblock %}

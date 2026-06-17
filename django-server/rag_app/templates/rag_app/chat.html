@@ -11,7 +11,7 @@
         {% csrf_token %}
         <textarea id="query" name="query" placeholder="Type your question here..."></textarea>
         <div class="chat-form-controls">
-            <label for="n_results">Retrieved documents:</label>
+            <label for="n_results">Retrieved docs:</label>
             <input
                 type="number"
                 id="n_results"
@@ -21,80 +21,76 @@
                 max="50"
                 title="Number of document chunks retrieved from the vector database per query"
             >
+            <label class="hyde-label" for="use_hyde" title="HyDE: ask the LLM to generate a hypothetical answer first, then embed that instead of your raw question. Usually improves retrieval quality for short or ambiguous questions.">
+                <input type="checkbox" id="use_hyde" {% if config_use_hyde %}checked{% endif %}>
+                HyDE
+            </label>
             <button type="submit">Send</button>
         </div>
     </form>
+
     {% if record_data %}
-    <p>This session if being recorded!</p>
+    <p>This session is being recorded!</p>
     {% endif %}
 </div>
 
 <script>
     document.getElementById('chat-form').addEventListener('submit', function(event) {
-        event.preventDefault(); 
-    
+        event.preventDefault();
+
         const queryInput = document.getElementById('query');
         const userQuery = queryInput.value.trim();
         if (!userQuery) return;
-    
+
         const chatBox = document.getElementById('chat-box');
-    
+
         // Display user message
         const userMsgDiv = document.createElement('div');
         userMsgDiv.className = 'user-message';
         userMsgDiv.innerHTML = `<p><strong>You:</strong> ${userQuery}</p>`;
         chatBox.appendChild(userMsgDiv);
-    
-        // Clear the input field
+
         queryInput.value = '';
-    
-        // Create a new bot message container and response element
+
+        // Bot message container
         const botMsgDiv = document.createElement('div');
         botMsgDiv.className = 'bot-message';
-    
+
         const botResponseElem = document.createElement('span');
         botMsgDiv.innerHTML = `<p><strong>Bot:</strong> </p>`;
         botMsgDiv.querySelector('p').appendChild(botResponseElem);
-        
-        // Create a container for the 'Documents used...' link & content
-        // We'll hide it until we have doc data
+
+        // Docs toggle (hidden until docs arrive)
         const docsContainer = document.createElement('div');
-        docsContainer.style.display = 'none'; 
-        docsContainer.className = 'docs-container'; // for your styling
-    
-        // Our "toggle docs" link
+        docsContainer.style.display = 'none';
+        docsContainer.className = 'docs-container';
+
         const docsToggleLink = document.createElement('a');
         docsToggleLink.href = '#';
         docsToggleLink.textContent = 'Documents used to get this answer';
-        docsToggleLink.style.display = 'none'; // start hidden, show later
-        docsToggleLink.addEventListener('click', function(e){
+        docsToggleLink.style.display = 'none';
+        docsToggleLink.addEventListener('click', function(e) {
             e.preventDefault();
-            // Toggle open/close
-            if (docsContainer.style.display === 'none') {
-                docsContainer.style.display = 'block';
-            } else {
-                docsContainer.style.display = 'none';
-            }
+            docsContainer.style.display = docsContainer.style.display === 'none' ? 'block' : 'none';
         });
-    
-        // Append link and the container to the bot message
+
         botMsgDiv.appendChild(docsToggleLink);
         botMsgDiv.appendChild(docsContainer);
-    
         chatBox.appendChild(botMsgDiv);
         chatBox.scrollTop = chatBox.scrollHeight;
-    
+
         // Prepare form data
         const formData = new FormData();
         formData.append('query', userQuery);
         formData.append('n_results', document.getElementById('n_results').value);
+        formData.append('use_hyde', document.getElementById('use_hyde').checked ? '1' : '0');
         formData.append('csrfmiddlewaretoken',
             document.querySelector('[name=csrfmiddlewaretoken]').value);
-    
+
         // Stream the response from the server
         fetch("{% url 'chat_stream' %}", {
             method: 'POST',
-            body: formData
+            body: formData,
         })
         .then(response => {
             if (!response.body) {
@@ -102,44 +98,62 @@
             }
             const reader = response.body.getReader();
             const decoder = new TextDecoder('utf-8');
-    
             let buffer = '';
-    
+
             function readChunk() {
                 return reader.read().then(({ done, value }) => {
-                    if (done) {
-                        // Finished reading
-                        return;
-                    }
-                    // Decode chunk
-                    const chunkText = decoder.decode(value, {stream: true});
-    
-                    // We want to watch for the final docs marker: <|DOCS_JSON|>
-                    buffer += chunkText;
-    
-                    // If we find the marker, we split it out
+                    if (done) return;
+
+                    buffer += decoder.decode(value, {stream: true});
+
                     const markerIndex = buffer.indexOf('<|DOCS_JSON|>');
                     if (markerIndex !== -1) {
-                        // Everything up to the marker is normal LLM text
+                        // Everything before the marker is normal LLM text
                         const normalText = buffer.slice(0, markerIndex);
-    
-                        // Everything after the marker is doc JSON
-                        const docsText = buffer.slice(markerIndex + '<|DOCS_JSON|>'.length);
-                        
-                        // Append all normal text to the Bot response
+                        const docsText  = buffer.slice(markerIndex + '<|DOCS_JSON|>'.length);
+
                         botResponseElem.textContent += normalText;
                         chatBox.scrollTop = chatBox.scrollHeight;
-    
-                        // Attempt to parse the doc JSON
+
+                        // Parse meta payload: { docs: [...], hyde_doc: str|null }
                         let docsData = [];
+                        let hydeDoc  = null;
                         try {
-                            docsData = JSON.parse(docsText);
+                            const metaPayload = JSON.parse(docsText);
+                            docsData = metaPayload.docs    || [];
+                            hydeDoc  = metaPayload.hyde_doc || null;
                         } catch (e) {
                             console.error('Error parsing docs JSON:', e);
                         }
-                        // Now we fill the docsContainer with the doc data
+
+                        // Collapsible HyDE section
+                        if (hydeDoc) {
+                            const hydeToggle = document.createElement('a');
+                            hydeToggle.href = '#';
+                            hydeToggle.className = 'hyde-toggle-link';
+                            hydeToggle.textContent = 'View hypothetical document used for retrieval (HyDE \u25bc)';
+
+                            const hydeBox = document.createElement('div');
+                            hydeBox.className = 'hyde-content';
+                            hydeBox.style.display = 'none';
+                            hydeBox.textContent = hydeDoc;
+
+                            hydeToggle.addEventListener('click', function(e) {
+                                e.preventDefault();
+                                const hidden = hydeBox.style.display === 'none';
+                                hydeBox.style.display = hidden ? 'block' : 'none';
+                                hydeToggle.textContent = hidden
+                                    ? 'Hide hypothetical document (HyDE \u25b2)'
+                                    : 'View hypothetical document used for retrieval (HyDE \u25bc)';
+                            });
+
+                            botMsgDiv.insertBefore(hydeToggle, docsToggleLink);
+                            botMsgDiv.insertBefore(hydeBox,    docsToggleLink);
+                        }
+
+                        // Collapsible retrieved documents section
                         if (docsData.length > 0) {
-                            docsToggleLink.style.display = 'inline-block'; // show the link
+                            docsToggleLink.style.display = 'inline-block';
                             let html = '';
                             docsData.forEach((doc, idx) => {
                                 html += `
@@ -158,27 +172,23 @@
                             });
                             docsContainer.innerHTML = html;
                         }
-    
-                        // Done with streaming. We'll stop reading further
-                        // so we don't re-append text, etc.
                         return;
-                    } else {
-                        // No marker, so everything is normal text so far
-                        botResponseElem.textContent += chunkText;
-                        chatBox.scrollTop = chatBox.scrollHeight;
                     }
-    
-                    // Keep reading ...
+
+                    // No marker yet — everything is normal LLM text
+                    botResponseElem.textContent += buffer.replace('<|DOCS_JSON|>', '');
+                    buffer = '';
+                    chatBox.scrollTop = chatBox.scrollHeight;
                     return readChunk();
                 });
             }
-    
+
             return readChunk();
         })
         .catch(err => {
             console.error("Error fetching streaming response:", err);
         });
     });
-    </script>
-    
+</script>
+
 {% endblock %}

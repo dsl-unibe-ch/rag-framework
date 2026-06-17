@@ -382,3 +382,91 @@ body, html {
     margin-bottom: 10px;
   }
   
+/* -------------------------------------------------------------------------
+   HyDE - Hypothetical Document Embeddings UI elements
+   ---------------------------------------------------------------------- */
+
+/* Inline label with checkbox used in both chat and search forms */
+.hyde-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 0.9rem;
+    color: #374151;
+    cursor: pointer;
+    user-select: none;
+    white-space: nowrap;
+}
+
+.hyde-label input[type="checkbox"] {
+    accent-color: #4e90fe;
+    cursor: pointer;
+    width: 15px;
+    height: 15px;
+}
+
+/* Collapsible toggle link (chat page) */
+.hyde-toggle-link {
+    display: block;
+    margin: 6px 0 2px;
+    font-size: 0.85rem;
+    color: #4e90fe;
+    text-decoration: none;
+}
+
+.hyde-toggle-link:hover {
+    text-decoration: underline;
+}
+
+/* Hypothetical document content box */
+.hyde-content {
+    background: #eef3ff;
+    border-left: 3px solid #4e90fe;
+    border-radius: 0 4px 4px 0;
+    padding: 8px 12px;
+    margin: 4px 0 10px;
+    font-size: 0.9rem;
+    color: #374151;
+    white-space: pre-wrap;
+    line-height: 1.5;
+}
+
+/* HyDE info block on the search results page */
+.hyde-info {
+    background: #eef3ff;
+    border: 1px solid #4e90fe;
+    border-radius: 8px;
+    padding: 12px 16px;
+    margin: 0 auto 20px;
+    max-width: 800px;
+    text-align: left;
+}
+
+.hyde-label-text {
+    font-size: 0.95rem;
+    font-weight: bold;
+    color: #021330;
+    margin: 0 0 6px;
+}
+
+/* Chat form controls row */
+.chat-form-controls {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-shrink: 0;
+}
+
+.chat-form-controls label:not(.hyde-label) {
+    font-size: 0.9rem;
+    color: #374151;
+    white-space: nowrap;
+}
+
+.chat-form-controls input[type="number"] {
+    width: 60px;
+    padding: 4px 6px;
+    border: 1px solid #021330;
+    border-radius: 4px;
+    font-size: 0.9rem;
+}

@@ -28,4 +28,16 @@ If the DOCUMENT doesn’t contain the facts to answer the QUESTION return NO Ans
 """
 
 # whether to record data from user interactions
-record_data = True
+record_data = False
+# ---------------------------------------------------------------------------
+# HyDE - Hypothetical Document Embeddings
+# ---------------------------------------------------------------------------
+# When True, the LLM is asked to draft a short hypothetical answer for the
+# user's question *before* retrieval.  The hypothetical text is then embedded
+# instead of the raw question, which typically improves retrieval quality
+# because generated answers are stylistically closer to stored document
+# chunks than a short question is.
+#
+# This setting acts as the global default; it can be toggled per-request from
+# the web UI without modifying this file.
+use_hyde = False
