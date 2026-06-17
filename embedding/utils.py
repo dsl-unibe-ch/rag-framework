@@ -49,26 +49,56 @@ def read_text_file(file_path: str) -> str:
 
 
 def read_pdf_file(file_path: str) -> str:
-    """
-    Reads the content of a PDF file and returns it as a single string.
-    
+    """Read the content of a PDF file and return it as a single string.
+
+    Both prose text and tables are extracted.  Tables are formatted as
+    pipe-delimited rows so their structure is preserved in the output
+    rather than being collapsed into a single garbled line.
+
     Args:
         file_path (str): The path to the PDF file to read.
-    
+
     Returns:
-        str: The content of the PDF as a single string.
+        str: The full content of the PDF as a single string.
     """
-    text_content = []
-    
+    parts: list[str] = []
+
     with pdfplumber.open(file_path) as pdf:
         for page in pdf.pages:
-            # Extract text from each page
-            page_text = page.extract_text()
-            if page_text:  # Ensure the page has text
-                text_content.append(page_text)
-    
-    # Join all pages' text into a single string
-    return "\n".join(text_content)
+            tables = []
+            try:
+                tables = page.find_tables()
+            except Exception:
+                pass
+
+            if not tables:
+                page_text = page.extract_text() or ""
+                if page_text.strip():
+                    parts.append(page_text)
+                continue
+
+            # Extract prose text outside detected table regions.
+            text_page = page
+            for table in tables:
+                try:
+                    text_page = text_page.outside_bbox(table.bbox)
+                except Exception:
+                    pass
+            prose = text_page.extract_text() or ""
+            if prose.strip():
+                parts.append(prose)
+
+            # Append each table as pipe-delimited structured text.
+            for table in tables:
+                try:
+                    rows = table.extract()
+                    table_text = _format_table_as_text(rows)
+                    if table_text:
+                        parts.append(table_text)
+                except Exception:
+                    pass
+
+    return "\n".join(parts)
 
 
 def split_text_into_sentences(text: str, language: str) -> list[str]:
@@ -381,21 +411,133 @@ def _sentences_txt(file_path: str, language: str) -> list[dict]:
     ]
 
 
+def _format_table_as_text(rows: list[list]) -> str:
+    """Format a pdfplumber table as a pipe-delimited markdown-style table.
+
+    The first row is treated as the header.  Entirely empty rows are
+    dropped.  A separator line is inserted below the header when more
+    than one row is present so the output resembles a Markdown table,
+    making it readable in both prose and structured contexts.
+
+    Args:
+        rows: A list of rows; each row is a list of cell values (str or None).
+
+    Returns:
+        A formatted string, or an empty string if the table has no usable
+        content.
+    """
+    if not rows:
+        return ""
+
+    normalised = [
+        [str(cell).strip() if cell is not None else "" for cell in row]
+        for row in rows
+        if any(cell is not None and str(cell).strip() for cell in row)
+    ]
+    if not normalised:
+        return ""
+
+    formatted_rows = ["| " + " | ".join(row) + " |" for row in normalised]
+
+    if len(formatted_rows) > 1:
+        n_cols = len(normalised[0])
+        separator = "| " + " | ".join(["---"] * n_cols) + " |"
+        formatted_rows.insert(1, separator)
+
+    return "\n".join(formatted_rows)
+
+
+def _extract_pdf_page_sentences(
+    page, page_num: int, language: str
+) -> list[dict]:
+    """Extract sentences and tables from a single PDF page.
+
+    Tables are detected with pdfplumber layout analysis and formatted as
+    pipe-delimited text to preserve row/column structure.  Non-table prose
+    is sentence-tokenised normally.  Tables always follow prose in the
+    returned list, which is sufficient for RAG retrieval since each chunk
+    is retrieved independently.
+
+    Args:
+        page: A pdfplumber.Page object.
+        page_num: 1-based page index stored as page_number metadata.
+        language: NLTK sentence-tokeniser language.
+
+    Returns:
+        A list of sentence/table dicts with page_number set on every entry.
+    """
+    result: list[dict] = []
+
+    try:
+        tables = page.find_tables()
+    except Exception:
+        tables = []
+
+    if not tables:
+        page_text = page.extract_text() or ""
+        for sent in nltk.sent_tokenize(page_text, language=language):
+            if sent.strip():
+                result.append(_make_sent(sent, page_number=page_num))
+        return result
+
+    # Exclude table bounding boxes so cell text is not duplicated in prose.
+    text_page = page
+    for table in tables:
+        try:
+            text_page = text_page.outside_bbox(table.bbox)
+        except Exception:
+            pass
+
+    prose_text = text_page.extract_text() or ""
+    for sent in nltk.sent_tokenize(prose_text, language=language):
+        if sent.strip():
+            result.append(_make_sent(sent, page_number=page_num))
+
+    # Append each table as a single structured block.
+    for table in tables:
+        try:
+            rows = table.extract()
+            table_text = _format_table_as_text(rows)
+            if table_text:
+                result.append(_make_sent(table_text, page_number=page_num))
+        except Exception:
+            pass
+
+    return result
+
+
 def _sentences_pdf(file_path: str, language: str) -> list[dict]:
-    """Extract sentences from a PDF, tagging each with its page number."""
+    """Extract sentences from a PDF, tagging each with its page number.
+
+    Tables on each page are detected and formatted as pipe-delimited rows
+    to preserve their structure for retrieval.  Falls back to plain text
+    extraction per page on any per-page error.
+
+    Args:
+        file_path: Path to the PDF file.
+        language: NLTK sentence-tokeniser language.
+
+    Returns:
+        List of sentence/table dicts with page_number metadata.
+    """
     result: list[dict] = []
     try:
         with pdfplumber.open(file_path) as pdf:
             for page_num, page in enumerate(pdf.pages, start=1):
                 try:
-                    page_text = page.extract_text() or ""
+                    result.extend(
+                        _extract_pdf_page_sentences(page, page_num, language)
+                    )
                 except Exception:
-                    continue
-                if not page_text.strip():
-                    continue
-                for sent in nltk.sent_tokenize(page_text, language=language):
-                    if sent.strip():
-                        result.append(_make_sent(sent, page_number=page_num))
+                    try:
+                        page_text = page.extract_text() or ""
+                        for sent in nltk.sent_tokenize(page_text, language=language):
+                            if sent.strip():
+                                result.append(
+                                    _make_sent(sent, page_number=page_num)
+                                )
+                    except Exception:
+                        pass
     except Exception as exc:
         print(f"  Warning: could not fully read PDF '{file_path}': {exc}")
     return result
