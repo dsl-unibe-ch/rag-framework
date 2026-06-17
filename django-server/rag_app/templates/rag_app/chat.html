@@ -10,7 +10,19 @@
     <form id="chat-form" class="chat-form">
         {% csrf_token %}
         <textarea id="query" name="query" placeholder="Type your question here..."></textarea>
-        <button type="submit">Send</button>
+        <div class="chat-form-controls">
+            <label for="n_results">Retrieved documents:</label>
+            <input
+                type="number"
+                id="n_results"
+                name="n_results"
+                value="{{ default_n_results }}"
+                min="1"
+                max="50"
+                title="Number of document chunks retrieved from the vector database per query"
+            >
+            <button type="submit">Send</button>
+        </div>
     </form>
     {% if record_data %}
     <p>This session if being recorded!</p>
@@ -75,7 +87,8 @@
         // Prepare form data
         const formData = new FormData();
         formData.append('query', userQuery);
-        formData.append('csrfmiddlewaretoken', 
+        formData.append('n_results', document.getElementById('n_results').value);
+        formData.append('csrfmiddlewaretoken',
             document.querySelector('[name=csrfmiddlewaretoken]').value);
     
         // Stream the response from the server

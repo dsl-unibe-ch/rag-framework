@@ -49,3 +49,11 @@ semantic_buffer_size = 1
 # Optional hard cap on the number of sentences per semantic chunk, useful to
 # avoid a single very large chunk. 0 disables the cap.
 semantic_max_chunk_sentences = 0
+
+
+# ---------------------------------------------------------------------------
+# Retrieval settings
+# ---------------------------------------------------------------------------
+# Default number of chunks returned from the vector database for each query.
+# Can be overridden at query time via the web UI or CLI arguments.
+n_results = 5

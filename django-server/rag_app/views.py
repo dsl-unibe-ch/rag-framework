@@ -5,7 +5,15 @@ from django.http import StreamingHttpResponse, JsonResponse
 from django.conf import settings
 
 from retrieval.main import ChromaRetriever, OpenAIChromaRetriever
-from config.embedding_config import model_name, db_directory, collection_name, use_openai_embeddings, openai_embedding_model, openai_embedding_base_url
+from config.embedding_config import (
+    model_name,
+    db_directory,
+    collection_name,
+    use_openai_embeddings,
+    openai_embedding_model,
+    openai_embedding_base_url,
+    n_results as default_n_results,
+)
 
 from llm.main import Responder, OpenAIResponder
 from config.llm_config import llm_model, prompt, use_openai, openai_model, record_data, openai_base_url
@@ -82,14 +90,18 @@ def search(request):
         )
     footer_class = 'footer-flex' if submitted else 'footer-absolute'
 
-    return render(request, "rag_app/search.html", {"data": formatted_results, "submitted": submitted, 'footer_class': footer_class,})
+    return render(request, "rag_app/search.html", {"data": formatted_results, "submitted": submitted, "n_results": default_n_results, 'footer_class': footer_class,})
     
 
 
 def chat_page(request):
     # Renders the chat page with the form and no answers yet
     footer_class = 'footer-absolute'
-    return render(request, 'rag_app/chat.html', {'footer_class': footer_class, 'record_data': record_data})
+    return render(request, 'rag_app/chat.html', {
+        'footer_class': footer_class,
+        'record_data': record_data,
+        'default_n_results': default_n_results,
+    })
 
 
 @csrf_exempt
@@ -98,6 +110,13 @@ def chat_stream(request):
     user_query = request.POST.get('query', '').strip()
     if not user_query:
         return JsonResponse({"error": "No query provided"}, status=400)
+
+    # Accept n_results from the UI; fall back to the config default.
+    try:
+        n_results = int(request.POST.get('n_results', default_n_results))
+        n_results = max(1, n_results)
+    except (ValueError, TypeError):
+        n_results = default_n_results
 
     # -- 1) Retrieve
     if use_openai_embeddings:
@@ -111,14 +130,14 @@ def chat_stream(request):
             embedding_model=openai_embedding_model,
             db_path=db_directory,
             db_collection=collection_name,
-            n_results=5
+            n_results=n_results
         )
     else:
         retriever = ChromaRetriever(
-            embedding_model=model_name, 
-            db_path=db_directory, 
-            db_collection=collection_name, 
-            n_results=5
+            embedding_model=model_name,
+            db_path=db_directory,
+            db_collection=collection_name,
+            n_results=n_results
         )
     search_results = retriever.retrieve(user_query)
 

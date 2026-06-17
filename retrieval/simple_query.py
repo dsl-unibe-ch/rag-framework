@@ -9,7 +9,7 @@ parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(parent_dir)
 
 
-from config.embedding_config import model_name, db_directory, collection_name
+from config.embedding_config import model_name, db_directory, collection_name, n_results
 
 
 # Initialize the ChromaDB persistent client
@@ -30,7 +30,7 @@ query_embedding = embedding_model.encode(query_text)
 # Perform the query
 results = collection.query(
     query_embeddings=[query_embedding],
-    n_results=5  # Number of results to retrieve
+    n_results=n_results
 )
 
 # Print out the results

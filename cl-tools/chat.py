@@ -8,7 +8,15 @@ parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(parent_dir)
 
 from retrieval.main import ChromaRetriever, OpenAIChromaRetriever
-from config.embedding_config import model_name, db_directory, collection_name, use_openai_embeddings, openai_embedding_model, openai_embedding_base_url
+from config.embedding_config import (
+    model_name,
+    db_directory,
+    collection_name,
+    use_openai_embeddings,
+    openai_embedding_model,
+    openai_embedding_base_url,
+    n_results,
+)
 
 from llm.main import Responder, OpenAIResponder
 from config.llm_config import llm_model, prompt, openai_model, use_openai, openai_base_url
@@ -36,13 +44,13 @@ def main():
                 embedding_model=openai_embedding_model,
                 db_path=db_directory,
                 db_collection=collection_name,
-                n_results=5
+                n_results=n_results
                 )
         else:
-            retriever = ChromaRetriever(embedding_model=model_name, 
-                                db_path=db_directory, 
-                                db_collection=collection_name, 
-                                n_results=5)
+            retriever = ChromaRetriever(embedding_model=model_name,
+                                db_path=db_directory,
+                                db_collection=collection_name,
+                                n_results=n_results)
         
         user_query = str(input("Ask a question. Type quit to exit:  "))
         if user_query.lower() == "quit":
