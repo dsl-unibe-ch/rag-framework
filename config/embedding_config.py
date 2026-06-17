@@ -74,6 +74,17 @@ token_chunk_overlap = 50
 token_encoding = "cl100k_base"
 
 # ---------------------------------------------------------------------------
+# Embedding batch size
+# ---------------------------------------------------------------------------
+# Maximum number of texts sent to the embedding backend in a single call.
+# For OpenAI-compatible APIs this maps directly to the number of items in
+# one HTTP request; most providers cap this at 96–2048.  For local
+# SentenceTransformer models, encode() handles its own internal batching
+# but this controls how many chunks are collected before a single encode()
+# call (set high, e.g. 512, for local models).
+embedding_batch_size = 64
+
+# ---------------------------------------------------------------------------
 # Retrieval settings
 # ---------------------------------------------------------------------------
 # Default number of chunks returned from the vector database for each query.

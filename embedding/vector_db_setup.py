@@ -49,6 +49,7 @@ from config.embedding_config import (
     token_chunk_size,
     token_chunk_overlap,
     token_encoding,
+    embedding_batch_size,
     source_url as default_source_url,
 )
 
@@ -79,10 +80,16 @@ client = chromadb.PersistentClient(path=db_directory)
 def build_embedder(openai_client, embedding_model):
     """Build a function that embeds a list of texts into vectors.
 
-    The returned callable hides whether embeddings come from an OpenAI
-    compatible API or a local SentenceTransformer model, so the rest of
-    the pipeline (semantic chunking and chunk storage) can stay agnostic
-    of the backend.
+    The returned callable handles batching internally so callers can pass
+    any number of texts without worrying about API limits:
+
+    * **OpenAI-compatible API** -- texts are split into sub-batches of
+      ``embedding_batch_size`` and concatenated after all requests
+      complete.  This respects per-request item limits imposed by most
+      hosted APIs while still minimising the total number of HTTP calls.
+    * **Local SentenceTransformer** -- all texts are passed to
+      ``encode()`` in one call; the library manages GPU/CPU batching
+      internally.
 
     Args:
         openai_client: An initialized OpenAI client, or ``None`` when using
@@ -93,16 +100,25 @@ def build_embedder(openai_client, embedding_model):
     Returns:
         A callable mapping ``list[str]`` to ``list[list[float]]``.
     """
-    def embed_texts(texts):
+    def embed_texts(texts: list) -> list:
+        if not texts:
+            return []
+
         if use_openai_embeddings:
-            # It is good practice to replace newlines for embeddings.
             cleaned = [text.replace("\n", " ") for text in texts]
-            response = openai_client.embeddings.create(
-                model=openai_embedding_model,
-                input=cleaned,
-            )
-            return [item.embedding for item in response.data]
-        # Local SentenceTransformer call; convert to plain lists for ChromaDB.
+            results: list = []
+            for start in range(0, len(cleaned), embedding_batch_size):
+                batch = cleaned[start: start + embedding_batch_size]
+                response = openai_client.embeddings.create(
+                    model=openai_embedding_model,
+                    input=batch,
+                )
+                results.extend(item.embedding for item in response.data)
+            return results
+
+        # Local SentenceTransformer: encode() handles its own internal
+        # micro-batching; we pass all texts in one call for maximum
+        # GPU utilisation.
         return embedding_model.encode(texts).tolist()
 
     return embed_texts
@@ -189,10 +205,14 @@ def index_file(
     sidecar = load_sidecar_metadata(file_path)
     source_url = sidecar.get("source_url", default_source_url)
 
-    written_ids: list[str] = []
+    # ------------------------------------------------------------------
+    # Build all chunk records first (no embedding calls yet).
+    # ------------------------------------------------------------------
+    all_texts: list[str] = []
+    all_ids: list[str] = []
+    all_metadatas: list[dict] = []
 
     for i, (chunk_text, first_sent_idx) in enumerate(chunk_pairs):
-        # Derive chunk-level metadata from the first sentence in this chunk.
         first_sent = sentences_data[
             min(first_sent_idx, len(sentences_data) - 1)
         ]
@@ -202,7 +222,6 @@ def index_file(
             "chunk_id": i,
             "ingest_date": ingest_date,
         }
-        # Only add optional fields when they carry a real value.
         if source_url:
             metadata["source_url"] = source_url
         if "page_number" in first_sent:
@@ -210,22 +229,38 @@ def index_file(
         if "section_title" in first_sent:
             metadata["section_title"] = first_sent["section_title"]
 
-        try:
-            embedding = embed_texts([chunk_text])[0]
-        except Exception as exc:
-            print(f"  Error embedding chunk {i} of '{file_name}': {exc}")
-            continue
+        all_texts.append(chunk_text)
+        all_ids.append(f"{file_name}_chunk_{i}")
+        all_metadatas.append(metadata)
 
-        chunk_id = f"{file_name}_chunk_{i}"
+    if not all_texts:
+        return []
+
+    # ------------------------------------------------------------------
+    # Embed all chunks for this file in one batched call.
+    # build_embedder() handles splitting into API sub-batches internally.
+    # ------------------------------------------------------------------
+    try:
+        all_embeddings = embed_texts(all_texts)
+    except Exception as exc:
+        print(f"  Error embedding chunks of '{file_name}': {exc}")
+        return []
+
+    # ------------------------------------------------------------------
+    # Upsert all chunks in a single ChromaDB call.
+    # ------------------------------------------------------------------
+    try:
         collection.upsert(
-            documents=[chunk_text],
-            embeddings=[embedding],
-            metadatas=[metadata],
-            ids=[chunk_id],
+            documents=all_texts,
+            embeddings=all_embeddings,
+            metadatas=all_metadatas,
+            ids=all_ids,
         )
-        written_ids.append(chunk_id)
+    except Exception as exc:
+        print(f"  Error storing chunks of '{file_name}': {exc}")
+        return []
 
-    return written_ids
+    return all_ids
 
 
 def main():
