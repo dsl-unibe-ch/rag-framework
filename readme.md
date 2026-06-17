@@ -62,6 +62,12 @@ This repository contains a Retrieval-Augmented Generation (RAG) framework for ef
     *   `chunk_size`: This determines the number of sentences processed together when creating the vector database. You can adjust this value based on your data size and hardware capabilities.
     *   `overlap_size`: This determines the number of sentences overlaped between the chunk and the next chunk. This is useful to not lose semantic of chunks when splitting the text. The value must be lower than the chunk_size.
     *    `use_openai_embeddings`: This allows you to choose if choosing openai api for embedding or local sentence transformer model is set to True. If set to True, it will ignore `model_name` and uses `openai_embedding_model` instead
+    *   `chunking_method`: This selects how documents are split into chunks before embedding. Allowed values are `"sentence"` and `"semantic"`:
+        *   `"sentence"` (default): The original rule-based method. Sentences are grouped into fixed-size, overlapping windows using `chunk_size` and `overlap_size`. Fast and deterministic, but it can split a single idea across two chunks.
+        *   `"semantic"`: An embedding-based method. Every sentence is embedded and a new chunk is started whenever the topic shifts (the similarity between consecutive sentences drops below a data-driven threshold). This keeps semantically related sentences together and tends to produce more coherent chunks. When this method is selected, `chunk_size` and `overlap_size` are ignored and the `semantic_*` settings below are used instead. It reuses your configured embedding backend (local SentenceTransformer or OpenAI compatible API), so embedding the document costs extra calls at indexing time.
+    *   `semantic_breakpoint_percentile`: (semantic only) Percentile (0-100) of the consecutive-sentence distances used as the split threshold. A higher value (e.g. `95`) yields fewer, larger chunks; a lower value yields more, smaller chunks.
+    *   `semantic_buffer_size`: (semantic only) Number of neighbouring sentences combined with each sentence to give it context before embedding. `0` embeds each sentence on its own; `1` is a good default.
+    *   `semantic_max_chunk_sentences`: (semantic only) Optional hard cap on the number of sentences per chunk, useful to avoid a single very large chunk. `0` disables the cap.
 
     Example `embedding_config.py` (Remember to adapt these values to your specific setup):
 
@@ -88,6 +94,14 @@ This repository contains a Retrieval-Augmented Generation (RAG) framework for ef
     chunk_size = 20
 
     overlap_size = 5
+
+    # Chunking strategy: "sentence" (rule-based) or "semantic" (embedding-based)
+    chunking_method = "sentence"
+
+    # Semantic chunking settings (only used when chunking_method == "semantic")
+    semantic_breakpoint_percentile = 95
+    semantic_buffer_size = 1
+    semantic_max_chunk_sentences = 0
     ```
 
 5.  **Create vector database:**

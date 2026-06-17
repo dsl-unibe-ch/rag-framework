@@ -22,3 +22,30 @@ db_directory = os.path.join(os.path.expanduser('~'), '.db')  #default. Change it
 chunk_size = 20   #number of sentences each chunk will contain in the vector db
 
 overlap_size = 5 # must be less than the chunk_size. It indicates how many sentences overlaps when splitting chunks
+
+
+# ---------------------------------------------------------------------------
+# Chunking strategy
+# ---------------------------------------------------------------------------
+# How documents are split into chunks before embedding.
+# Allowed Values:
+#   "sentence" -> rule-based: fixed-size, overlapping windows of sentences
+#                 (uses chunk_size and overlap_size above).
+#   "semantic" -> embedding-based: starts a new chunk when the topic shifts.
+#                 (uses the semantic_* settings below; chunk_size and
+#                  overlap_size are ignored).
+chunking_method = "semantic"
+
+# --- Semantic chunking settings (only used when chunking_method == "semantic") ---
+
+# Percentile (0-100) of consecutive-sentence distances used as the split
+# threshold. Higher -> fewer, larger chunks. Lower -> more, smaller chunks.
+semantic_breakpoint_percentile = 95
+
+# Number of neighbouring sentences combined with each sentence to give it
+# context before embedding. 0 embeds each sentence on its own.
+semantic_buffer_size = 1
+
+# Optional hard cap on the number of sentences per semantic chunk, useful to
+# avoid a single very large chunk. 0 disables the cap.
+semantic_max_chunk_sentences = 0

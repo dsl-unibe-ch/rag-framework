@@ -1,0 +1,205 @@
+"""Text chunking strategies for the RAG framework.
+
+This module groups a document's sentences into chunks that are later
+embedded and stored in the vector database. Two strategies are provided:
+
+* ``sentence`` -- the original rule-based approach. Sentences are grouped
+  into fixed-size, overlapping windows. Fast and deterministic, but it
+  ignores the meaning of the text and can split a single idea across two
+  chunks.
+* ``semantic`` -- an embedding-based approach. Each sentence is embedded
+  and a new chunk is started whenever the meaning shifts (i.e. the
+  similarity between consecutive sentences drops below a data-driven
+  threshold). This keeps semantically related sentences together.
+
+Use :func:`create_chunks` as the single entry point; it dispatches to the
+correct strategy based on ``method``.
+"""
+
+from typing import Callable, List, Sequence
+
+import numpy as np
+
+from embedding.utils import chunk_sentences
+
+# A callable that turns a list of texts into a list of embedding vectors.
+EmbedFn = Callable[[List[str]], Sequence[Sequence[float]]]
+
+# Allowed chunking strategy names.
+SENTENCE_METHOD = "sentence"
+SEMANTIC_METHOD = "semantic"
+ALLOWED_METHODS = (SENTENCE_METHOD, SEMANTIC_METHOD)
+
+
+def create_chunks(
+    method: str,
+    sentences: List[str],
+    *,
+    chunk_size: int,
+    overlap_size: int,
+    embed_fn: EmbedFn = None,
+    breakpoint_percentile: float = 95.0,
+    buffer_size: int = 1,
+    max_chunk_sentences: int = 0,
+) -> List[str]:
+    """Group sentences into chunks using the requested strategy.
+
+    Args:
+        method: The chunking strategy to use. One of ``ALLOWED_METHODS``.
+        sentences: The document's sentences, in reading order.
+        chunk_size: Sentences per chunk (``sentence`` strategy only).
+        overlap_size: Overlapping sentences between consecutive chunks
+            (``sentence`` strategy only).
+        embed_fn: A callable mapping a list of texts to their embedding
+            vectors. Required for the ``semantic`` strategy.
+        breakpoint_percentile: Percentile (0-100) of consecutive-sentence
+            distances used as the split threshold (``semantic`` only). A
+            higher value yields fewer, larger chunks.
+        buffer_size: Number of neighbouring sentences combined with each
+            sentence to give it context before embedding (``semantic``
+            only).
+        max_chunk_sentences: Optional hard cap on the number of sentences
+            in a semantic chunk. ``0`` disables the cap.
+
+    Returns:
+        A list of chunk strings.
+
+    Raises:
+        ValueError: If ``method`` is unknown, or if the ``semantic``
+            strategy is selected without an ``embed_fn``.
+    """
+    if method == SENTENCE_METHOD:
+        return chunk_sentences(sentences, chunk_size, overlap_size)
+
+    if method == SEMANTIC_METHOD:
+        if embed_fn is None:
+            raise ValueError(
+                "The 'semantic' chunking method requires an 'embed_fn'."
+            )
+        return chunk_sentences_semantically(
+            sentences,
+            embed_fn,
+            breakpoint_percentile=breakpoint_percentile,
+            buffer_size=buffer_size,
+            max_chunk_sentences=max_chunk_sentences,
+        )
+
+    raise ValueError(
+        f"Unknown chunking method '{method}'. "
+        f"Allowed values are: {list(ALLOWED_METHODS)}."
+    )
+
+
+def chunk_sentences_semantically(
+    sentences: List[str],
+    embed_fn: EmbedFn,
+    breakpoint_percentile: float = 95.0,
+    buffer_size: int = 1,
+    max_chunk_sentences: int = 0,
+) -> List[str]:
+    """Group sentences into semantically coherent chunks.
+
+    The algorithm embeds every sentence (optionally with a small window of
+    surrounding context), measures the cosine distance between consecutive
+    sentence embeddings, and starts a new chunk wherever that distance
+    exceeds a percentile-based threshold. Large jumps in distance signal a
+    change of topic and therefore a natural chunk boundary.
+
+    Args:
+        sentences: The document's sentences, in reading order.
+        embed_fn: A callable mapping a list of texts to their embedding
+            vectors.
+        breakpoint_percentile: Percentile (0-100) of consecutive-sentence
+            distances used as the split threshold. Higher means fewer,
+            larger chunks.
+        buffer_size: Number of neighbouring sentences combined with each
+            sentence to give it context before embedding. ``0`` embeds
+            each sentence on its own.
+        max_chunk_sentences: Optional hard cap on the number of sentences
+            per chunk. ``0`` disables the cap.
+
+    Returns:
+        A list of chunk strings.
+    """
+    cleaned = [s.strip() for s in sentences if s and s.strip()]
+    if len(cleaned) <= 1:
+        return cleaned
+
+    combined = _combine_sentences(cleaned, buffer_size)
+    embeddings = np.asarray(list(embed_fn(combined)), dtype=float)
+    distances = _consecutive_cosine_distances(embeddings)
+
+    if distances.size == 0:
+        return [" ".join(cleaned)]
+
+    threshold = float(np.percentile(distances, breakpoint_percentile))
+    # Index i in ``distances`` measures the gap between sentence i and i+1,
+    # so a value above the threshold means we split *after* sentence i.
+    split_after = {
+        i for i, distance in enumerate(distances) if distance > threshold
+    }
+
+    chunks: List[str] = []
+    current: List[str] = []
+    last_index = len(cleaned) - 1
+    for i, sentence in enumerate(cleaned):
+        current.append(sentence)
+        reached_cap = (
+            max_chunk_sentences > 0 and len(current) >= max_chunk_sentences
+        )
+        if i in split_after or i == last_index or reached_cap:
+            chunks.append(" ".join(current))
+            current = []
+
+    if current:
+        chunks.append(" ".join(current))
+
+    return chunks
+
+
+def _combine_sentences(sentences: List[str], buffer_size: int) -> List[str]:
+    """Combine each sentence with ``buffer_size`` neighbours on each side.
+
+    Embedding a sentence together with a little surrounding context makes
+    the resulting vectors less noisy and the topic boundaries cleaner.
+
+    Args:
+        sentences: The sentences to combine.
+        buffer_size: Number of neighbours to include on each side. ``0``
+            returns the sentences unchanged.
+
+    Returns:
+        A list, the same length as ``sentences``, of context-enriched
+        strings.
+    """
+    if buffer_size <= 0:
+        return list(sentences)
+
+    n = len(sentences)
+    combined: List[str] = []
+    for i in range(n):
+        start = max(0, i - buffer_size)
+        end = min(n, i + buffer_size + 1)
+        combined.append(" ".join(sentences[start:end]))
+    return combined
+
+
+def _consecutive_cosine_distances(embeddings: np.ndarray) -> np.ndarray:
+    """Compute cosine distance between each pair of adjacent embeddings.
+
+    Args:
+        embeddings: A ``(n, d)`` array of sentence embeddings.
+
+    Returns:
+        A ``(n - 1,)`` array where element ``i`` is ``1 - cosine_similarity``
+        between embedding ``i`` and ``i + 1``.
+    """
+    if embeddings.shape[0] < 2:
+        return np.empty(0, dtype=float)
+
+    norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
+    norms[norms == 0] = 1e-10
+    normalized = embeddings / norms
+
+    similarities = np.sum(normalized[:-1] * normalized[1:], axis=1)
+    return 1.0 - similarities
