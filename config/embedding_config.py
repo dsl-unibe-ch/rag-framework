@@ -34,7 +34,11 @@ overlap_size = 5 # must be less than the chunk_size. It indicates how many sente
 #   "semantic" -> embedding-based: starts a new chunk when the topic shifts.
 #                 (uses the semantic_* settings below; chunk_size and
 #                  overlap_size are ignored).
-chunking_method = "semantic"
+#   "token"    -> token-budget chunking: greedily accumulates sentences until
+#                 the token limit (token_chunk_size) is reached, then starts a
+#                 new chunk. Produces predictably sized chunks for any LLM
+#                 context window (uses the token_* settings below).
+chunking_method = "token"
 
 # --- Semantic chunking settings (only used when chunking_method == "semantic") ---
 
@@ -50,6 +54,24 @@ semantic_buffer_size = 1
 # avoid a single very large chunk. 0 disables the cap.
 semantic_max_chunk_sentences = 0
 
+
+# --- Token-aware chunking settings (only used when chunking_method == "token") ---
+
+# Target number of tokens per chunk.  A lower value produces more focused
+# chunks; a higher value provides more context per chunk.  512 is a safe
+# default for most LLMs with a 4096-token context window.
+token_chunk_size = 512
+
+# Number of tokens of overlap carried over from the end of the previous chunk
+# into the start of the next one.  Overlap prevents important context from
+# disappearing at a hard boundary.  Set to 0 for no overlap.
+token_chunk_overlap = 50
+
+# tiktoken encoding used to count tokens.  "cl100k_base" is the encoding
+# used by GPT-4, GPT-3.5-turbo, and many other modern models and is a
+# reasonable universal approximation.  Change to match your LLM's tokeniser
+# if you need exact counts (e.g. "p50k_base" for older GPT-3 models).
+token_encoding = "cl100k_base"
 
 # ---------------------------------------------------------------------------
 # Retrieval settings

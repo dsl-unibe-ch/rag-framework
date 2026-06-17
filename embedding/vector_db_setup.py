@@ -46,6 +46,9 @@ from config.embedding_config import (
     semantic_breakpoint_percentile,
     semantic_buffer_size,
     semantic_max_chunk_sentences,
+    token_chunk_size,
+    token_chunk_overlap,
+    token_encoding,
     source_url as default_source_url,
 )
 
@@ -173,6 +176,9 @@ def index_file(
         breakpoint_percentile=semantic_breakpoint_percentile,
         buffer_size=semantic_buffer_size,
         max_chunk_sentences=semantic_max_chunk_sentences,
+        token_chunk_size=token_chunk_size,
+        token_chunk_overlap=token_chunk_overlap,
+        token_encoding=token_encoding,
         return_indices=True,
     )
 
@@ -251,6 +257,10 @@ def main():
         print(f"  Breakpoint Percentile : {semantic_breakpoint_percentile}")
         print(f"  Buffer Size           : {semantic_buffer_size}")
         print(f"  Max Chunk Sentences   : {semantic_max_chunk_sentences}")
+    elif chunking_method == "token":
+        print(f"  Max Tokens per Chunk  : {token_chunk_size}")
+        print(f"  Token Overlap         : {token_chunk_overlap}")
+        print(f"  Token Encoding        : {token_encoding}")
     else:
         print(f"  Chunk Size  : {chunk_size}")
         print(f"  Overlap Size: {overlap_size}")
@@ -271,6 +281,9 @@ def main():
         semantic_breakpoint_percentile=semantic_breakpoint_percentile,
         semantic_buffer_size=semantic_buffer_size,
         semantic_max_chunk_sentences=semantic_max_chunk_sentences,
+        token_chunk_size=token_chunk_size,
+        token_chunk_overlap=token_chunk_overlap,
+        token_encoding=token_encoding,
     )
 
     # ---------------------------------------------------------

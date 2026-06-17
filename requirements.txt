@@ -9,3 +9,4 @@ python-dotenv==1.2.2
 django-environ==0.13.0
 tqdm==4.68.2
 python-docx==1.2.0
+tiktoken

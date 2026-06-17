@@ -1,7 +1,7 @@
 """Text chunking strategies for the RAG framework.
 
 This module groups a document's sentences into chunks that are later
-embedded and stored in the vector database. Two strategies are provided:
+embedded and stored in the vector database. Three strategies are provided:
 
 * ``sentence`` -- the original rule-based approach. Sentences are grouped
   into fixed-size, overlapping windows. Fast and deterministic, but it
@@ -11,6 +11,11 @@ embedded and stored in the vector database. Two strategies are provided:
   and a new chunk is started whenever the meaning shifts (i.e. the
   similarity between consecutive sentences drops below a data-driven
   threshold). This keeps semantically related sentences together.
+* ``token`` -- token-budget chunking. Sentences are greedily accumulated
+  until the chunk would exceed a target token count (e.g. 512), then a
+  new chunk is started. An optional token-level overlap carries context
+  across boundaries. Produces predictably sized chunks regardless of
+  sentence length variance.
 
 Use :func:`create_chunks` as the single entry point; it dispatches to the
 correct strategy based on ``method``.
@@ -28,7 +33,8 @@ EmbedFn = Callable[[List[str]], Sequence[Sequence[float]]]
 # Allowed chunking strategy names.
 SENTENCE_METHOD = "sentence"
 SEMANTIC_METHOD = "semantic"
-ALLOWED_METHODS = (SENTENCE_METHOD, SEMANTIC_METHOD)
+TOKEN_METHOD = "token"
+ALLOWED_METHODS = (SENTENCE_METHOD, SEMANTIC_METHOD, TOKEN_METHOD)
 
 
 def create_chunks(
@@ -41,6 +47,9 @@ def create_chunks(
     breakpoint_percentile: float = 95.0,
     buffer_size: int = 1,
     max_chunk_sentences: int = 0,
+    token_chunk_size: int = 512,
+    token_chunk_overlap: int = 50,
+    token_encoding: str = "cl100k_base",
     return_indices: bool = False,
 ) -> List:
     """Group sentences into chunks using the requested strategy.
@@ -61,6 +70,14 @@ def create_chunks(
             only).
         max_chunk_sentences: Optional hard cap on the number of sentences
             in a semantic chunk. ``0`` disables the cap.
+        token_chunk_size: Target token budget per chunk (``token`` strategy
+            only).  Sentences are greedily added until this budget would be
+            exceeded. Defaults to ``512``.
+        token_chunk_overlap: Number of tokens from the end of one chunk to
+            repeat at the start of the next (``token`` strategy only).
+            ``0`` disables overlap.  Defaults to ``50``.
+        token_encoding: tiktoken encoding name used to count tokens
+            (``token`` strategy only). Defaults to ``"cl100k_base"``.
         return_indices: When ``True``, return a list of
             ``(chunk_text, first_sentence_index)`` tuples instead of plain
             strings.  The index refers to the position of the first sentence
@@ -92,6 +109,15 @@ def create_chunks(
             breakpoint_percentile=breakpoint_percentile,
             buffer_size=buffer_size,
             max_chunk_sentences=max_chunk_sentences,
+            return_first_indices=return_indices,
+        )
+
+    if method == TOKEN_METHOD:
+        return chunk_by_tokens(
+            sentences,
+            max_tokens=token_chunk_size,
+            overlap_tokens=token_chunk_overlap,
+            encoding_name=token_encoding,
             return_first_indices=return_indices,
         )
 
@@ -229,3 +255,98 @@ def _consecutive_cosine_distances(embeddings: np.ndarray) -> np.ndarray:
 
     similarities = np.sum(normalized[:-1] * normalized[1:], axis=1)
     return 1.0 - similarities
+
+
+def chunk_by_tokens(
+    sentences: List[str],
+    max_tokens: int = 512,
+    overlap_tokens: int = 50,
+    encoding_name: str = "cl100k_base",
+    return_first_indices: bool = False,
+) -> List:
+    """Group sentences into chunks that stay within a target token budget.
+
+    Sentences are accumulated greedily until adding the next sentence would
+    exceed ``max_tokens``.  An optional token overlap carries context from
+    the tail of one chunk into the start of the next, preventing information
+    loss at hard boundaries.  A sentence that is individually longer than
+    ``max_tokens`` is always kept as its own chunk to avoid data loss.
+
+    Token counts are computed with `tiktoken`_ using the given encoding.
+    ``cl100k_base`` is the encoding for GPT-4 / GPT-3.5-turbo and is a
+    reasonable approximation for most modern LLMs.
+
+    .. _tiktoken: https://github.com/openai/tiktoken
+
+    Args:
+        sentences: The document's sentences, in reading order.
+        max_tokens: Maximum number of tokens per chunk.  Defaults to ``512``.
+        overlap_tokens: Number of tokens from the end of the previous chunk
+            to repeat at the start of the next chunk.  ``0`` disables
+            overlap.  Defaults to ``50``.
+        encoding_name: tiktoken encoding name used for token counting.
+            Defaults to ``"cl100k_base"``.
+        return_first_indices: When ``True``, return a list of
+            ``(chunk_text, first_sentence_index)`` tuples.
+
+    Returns:
+        A list of chunk strings, or ``(str, int)`` tuples when
+        ``return_first_indices`` is ``True``.
+    """
+    try:
+        import tiktoken
+        enc = tiktoken.get_encoding(encoding_name)
+
+        def count_tokens(text: str) -> int:
+            return len(enc.encode(text))
+    except Exception:
+        # Graceful fallback: estimate 1.33 tokens per whitespace-separated word.
+        def count_tokens(text: str) -> int:  # type: ignore[misc]
+            return max(1, int(len(text.split()) * 1.33))
+
+    cleaned = [s.strip() for s in sentences if s and s.strip()]
+    if not cleaned:
+        return []
+
+    token_counts = [count_tokens(s) for s in cleaned]
+    n = len(cleaned)
+    raw_chunks: List = []  # list of (chunk_text, first_sentence_index)
+    i = 0
+
+    while i < n:
+        start_idx = i
+        current_tokens = 0
+        j = i
+
+        while j < n:
+            t = token_counts[j]
+            # Always include at least one sentence even if it exceeds the budget,
+            # so a single over-long sentence does not cause an infinite loop.
+            if current_tokens + t > max_tokens and j > i:
+                break
+            current_tokens += t
+            j += 1
+
+        # sentences[i:j] form the current chunk.
+        raw_chunks.append((" ".join(cleaned[i:j]), start_idx))
+
+        # Determine the start of the next chunk considering token overlap.
+        if overlap_tokens > 0 and j > i + 1:
+            # Walk backward from j-1 accumulating tokens until the overlap
+            # budget is exhausted.  Never step back to i itself so that each
+            # iteration always makes forward progress.
+            overlap_acc = 0
+            next_start = j
+            for k in range(j - 1, i, -1):
+                if overlap_acc + token_counts[k] <= overlap_tokens:
+                    overlap_acc += token_counts[k]
+                    next_start = k
+                else:
+                    break
+            i = next_start
+        else:
+            i = j
+
+    if return_first_indices:
+        return raw_chunks
+    return [text for text, _ in raw_chunks]
