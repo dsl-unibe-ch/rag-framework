@@ -174,7 +174,10 @@ class OpenAIResponder:
                 stream=True,
             )
             for chunk in response_stream:
-                # 'delta' contains the incremental text
+                # Some OpenAI-compatible APIs send a final done-marker chunk
+                # with an empty choices list; skip those.
+                if not chunk.choices:
+                    continue
                 chunk_text = chunk.choices[0].delta.content or ""
                 print(chunk_text, end='', flush=True)
             print("\n")
@@ -198,6 +201,10 @@ class OpenAIResponder:
                 stream=True,
             )
             for chunk in response_stream:
+                # Some OpenAI-compatible APIs send a final done-marker chunk
+                # with an empty choices list; skip those.
+                if not chunk.choices:
+                    continue
                 chunk_text = chunk.choices[0].delta.content or ""
                 yield chunk_text
         except Exception as e:
