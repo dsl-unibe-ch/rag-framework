@@ -1,3 +1,22 @@
+"""Vector database setup script with incremental indexing.
+
+Run this script to build or update the ChromaDB vector database from the
+raw documents in ``raw_db``.  On every run the script compares each source
+file against a manifest to decide what action to take:
+
+* **Skip** -- file content and chunking config are unchanged since the last
+  run.  No embedding calls are made for this file.
+* **Re-index** -- file content has changed, or the chunking configuration
+  has been updated.  Old chunks are deleted and new ones are embedded and
+  stored.
+* **Index** -- new file that has never been seen before.
+* **Remove** -- file was deleted from ``raw_db`` since the last run.  Its
+  chunks are deleted from ChromaDB.
+
+The manifest is stored at ``{db_directory}/{collection_name}_manifest.json``
+alongside the ChromaDB data.
+"""
+
 import sys
 import os
 import chromadb
@@ -35,6 +54,16 @@ from embedding.utils import (
     split_text_into_sentences,
 )
 from embedding.chunking import create_chunks
+from embedding.indexer import (
+    get_manifest_path,
+    load_manifest,
+    save_manifest,
+    compute_file_hash,
+    compute_config_fingerprint,
+    needs_reindex,
+    get_stale_files,
+    make_manifest_entry,
+)
 
 # Load environment variables (for OPENAI_API_KEY)
 load_dotenv(os.path.join(parent_dir, '.env'))
@@ -75,11 +104,87 @@ def build_embedder(openai_client, embedding_model):
     return embed_texts
 
 
+def delete_file_chunks(collection, chunk_ids: list[str], file_label: str) -> None:
+    """Delete a file's chunks from ChromaDB, ignoring missing IDs.
+
+    Args:
+        collection: The ChromaDB collection object.
+        chunk_ids: List of chunk IDs to delete.
+        file_label: Human-readable label used in log output.
+    """
+    if not chunk_ids:
+        return
+    try:
+        collection.delete(ids=chunk_ids)
+    except Exception as e:
+        print(f"  Warning: could not delete old chunks for '{file_label}': {e}")
+
+
+def index_file(
+    file_path: str,
+    collection,
+    embed_texts,
+) -> list[str]:
+    """Read, chunk, embed, and store a single document.
+
+    Args:
+        file_path: Absolute path to the source file.
+        collection: The ChromaDB collection to write into.
+        embed_texts: Callable that maps a list of strings to embeddings.
+
+    Returns:
+        The list of chunk IDs that were written, in order.  Returns an empty
+        list if the file could not be processed.
+    """
+    # Read
+    if file_path.endswith('.txt'):
+        text = read_text_file(file_path)
+    elif file_path.endswith('.pdf'):
+        text = read_pdf_file(file_path)
+    else:
+        print(f"  Unsupported file type: {file_path}")
+        return []
+
+    # Sentence-split → chunk
+    sentences = split_text_into_sentences(text, data_language)
+    chunks = create_chunks(
+        chunking_method,
+        sentences,
+        chunk_size=chunk_size,
+        overlap_size=overlap_size,
+        embed_fn=embed_texts,
+        breakpoint_percentile=semantic_breakpoint_percentile,
+        buffer_size=semantic_buffer_size,
+        max_chunk_sentences=semantic_max_chunk_sentences,
+    )
+
+    file_name = os.path.basename(file_path)
+    written_ids: list[str] = []
+
+    for i, chunk_text in enumerate(chunks):
+        try:
+            embedding = embed_texts([chunk_text])[0]
+        except Exception as e:
+            print(f"  Error embedding chunk {i} of '{file_name}': {e}")
+            continue
+
+        chunk_id = f"{file_name}_chunk_{i}"
+        collection.add(
+            documents=[chunk_text],
+            embeddings=[embedding],
+            metadatas=[{"file_name": file_name, "chunk_id": i}],
+            ids=[chunk_id],
+        )
+        written_ids.append(chunk_id)
+
+    return written_ids
+
+
 def main():
     print("\n--- Embedding and Storing Documents in ChromaDB ---")
 
     # ---------------------------------------------------------
-    # 1. SETUP: Initialize the correct model based on config
+    # 1. SETUP: Initialize embedding backend
     # ---------------------------------------------------------
     openai_client = None
     embedding_model = None
@@ -88,96 +193,114 @@ def main():
         print(f"Using OpenAI Compatible API.")
         print(f"Model: {openai_embedding_model}")
         print(f"Base URL: {openai_embedding_base_url}")
-
-        # Initialize OpenAI Client
         openai_client = OpenAI(
             base_url=openai_embedding_base_url,
-            api_key=os.environ.get("OPENAI_API_KEY")  # Ensure this exists in your .env
+            api_key=os.environ.get("OPENAI_API_KEY"),
         )
     else:
         print(f"Using Local SentenceTransformer.")
         print(f"Model: {model_name}")
-
-        # Initialize Local Model
         embedding_model = SentenceTransformer(model_name, trust_remote_code=True)
 
-    # Single embedding entry point reused for chunking and storage.
     embed_texts = build_embedder(openai_client, embedding_model)
 
     print(f"Chunking Method: {chunking_method}")
     if chunking_method == "semantic":
-        print(f"Semantic Breakpoint Percentile: {semantic_breakpoint_percentile}")
-        print(f"Semantic Buffer Size: {semantic_buffer_size}")
-        print(f"Semantic Max Chunk Sentences: {semantic_max_chunk_sentences}")
+        print(f"  Breakpoint Percentile : {semantic_breakpoint_percentile}")
+        print(f"  Buffer Size           : {semantic_buffer_size}")
+        print(f"  Max Chunk Sentences   : {semantic_max_chunk_sentences}")
     else:
-        print(f"Chunk Size (sentences per chunk): {chunk_size}")
-        print(f"Overlap Size (sentences): {overlap_size}")
+        print(f"  Chunk Size  : {chunk_size}")
+        print(f"  Overlap Size: {overlap_size}")
     print(f"Raw Data Directory: {raw_db}")
-    print(f"Vector Database Directory: {db_directory}\n")
-    print(f"Vector Database is: {vector_db}\n")
+    print(f"Vector DB Directory: {db_directory}")
+    print(f"Vector DB Type: {vector_db}\n")
 
-    # Step 1: Load documents (txt and pdf)
+    # ---------------------------------------------------------
+    # 2. Load manifest and compute config fingerprint
+    # ---------------------------------------------------------
+    manifest_path = get_manifest_path(db_directory, collection_name)
+    manifest = load_manifest(manifest_path)
+
+    config_fp = compute_config_fingerprint(
+        chunking_method=chunking_method,
+        chunk_size=chunk_size,
+        overlap_size=overlap_size,
+        semantic_breakpoint_percentile=semantic_breakpoint_percentile,
+        semantic_buffer_size=semantic_buffer_size,
+        semantic_max_chunk_sentences=semantic_max_chunk_sentences,
+    )
+
+    # ---------------------------------------------------------
+    # 3. Discover source files and open/create the collection
+    # ---------------------------------------------------------
     file_paths = get_file_paths(raw_db, ["txt", "pdf"])
-    print(f"Found {len(file_paths)} files to process.\n")
+    print(f"Found {len(file_paths)} source files.")
 
-    # Create or retrieve the collection in ChromaDB
     collection = client.get_or_create_collection(collection_name)
 
-    total_chunks = 0
+    # ---------------------------------------------------------
+    # 4. Remove chunks for source files that no longer exist
+    # ---------------------------------------------------------
+    stale_paths = get_stale_files(file_paths, manifest)
+    if stale_paths:
+        print(f"\nRemoving {len(stale_paths)} deleted file(s) from the DB...")
+        for stale_path in stale_paths:
+            label = os.path.basename(stale_path)
+            old_ids = manifest[stale_path].get("chunk_ids", [])
+            delete_file_chunks(collection, old_ids, label)
+            del manifest[stale_path]
+            print(f"  Removed: {label} ({len(old_ids)} chunks deleted)")
 
+    # ---------------------------------------------------------
+    # 5. Index new / changed files; skip unchanged ones
+    # ---------------------------------------------------------
+    stats = {"skipped": 0, "new": 0, "updated": 0, "failed": 0}
+
+    print()
     for file_path in tqdm(file_paths, desc="Processing documents"):
-        # Step 2: Read content based on file type
-        if file_path.endswith('.txt'):
-            text = read_text_file(file_path)
-        elif file_path.endswith('.pdf'):
-            text = read_pdf_file(file_path)
-        else:
-            print(f"Unsupported file type: {file_path}")
+        file_hash = compute_file_hash(file_path)
+        file_label = os.path.basename(file_path)
+
+        if not needs_reindex(file_path, file_hash, config_fp, manifest):
+            stats["skipped"] += 1
             continue
 
-        # Step 3: Split text into sentences
-        sentences = split_text_into_sentences(text, data_language)
+        is_update = file_path in manifest
+        if is_update:
+            # Delete the previously stored chunks before re-indexing.
+            old_ids = manifest[file_path].get("chunk_ids", [])
+            delete_file_chunks(collection, old_ids, file_label)
 
-        # Step 4: Chunk sentences using the configured strategy
-        chunks = create_chunks(
-            chunking_method,
-            sentences,
-            chunk_size=chunk_size,
-            overlap_size=overlap_size,
-            embed_fn=embed_texts,
-            breakpoint_percentile=semantic_breakpoint_percentile,
-            buffer_size=semantic_buffer_size,
-            max_chunk_sentences=semantic_max_chunk_sentences,
-        )
+        new_ids = index_file(file_path, collection, embed_texts)
 
-        # Use file name as the document ID and create metadata with chunk index
-        file_name = os.path.basename(file_path)
+        if new_ids:
+            manifest[file_path] = make_manifest_entry(file_hash, config_fp, new_ids)
+            if is_update:
+                stats["updated"] += 1
+            else:
+                stats["new"] += 1
+        else:
+            stats["failed"] += 1
 
-        for i, chunk_text in enumerate(chunks):
+    # ---------------------------------------------------------
+    # 6. Persist the updated manifest
+    # ---------------------------------------------------------
+    save_manifest(manifest_path, manifest)
 
-            # ---------------------------------------------------------
-            # 5. EMBED: Generate embedding based on selected method
-            # ---------------------------------------------------------
-            try:
-                embedding = embed_texts([chunk_text])[0]
-            except Exception as e:
-                print(f"\nError embedding chunk {i} of {file_name}: {e}")
-                continue
-
-            # Create a unique ID for each chunk
-            chunk_id = f"{file_name}_chunk_{i}"
-
-            collection.add(
-                documents=[chunk_text],
-                embeddings=[embedding],
-                metadatas=[{"file_name": file_name, "chunk_id": i}],
-                ids=[chunk_id]
-            )
-            total_chunks += 1
-
-    print("\n--- Embedding and Storage Complete ---")
-    print(f"Stored {len(file_paths)} documents in ChromaDB.\n")
-    print(f"Stored {total_chunks} Chunks in the DB")
+    # ---------------------------------------------------------
+    # 7. Summary
+    # ---------------------------------------------------------
+    total_stored = sum(
+        len(entry.get("chunk_ids", [])) for entry in manifest.values()
+    )
+    print("\n--- Indexing Complete ---")
+    print(f"  New files indexed   : {stats['new']}")
+    print(f"  Files re-indexed    : {stats['updated']}")
+    print(f"  Files skipped       : {stats['skipped']} (unchanged)")
+    print(f"  Files failed        : {stats['failed']}")
+    print(f"  Total chunks in DB  : {total_stored}")
+    print(f"  Manifest saved to   : {manifest_path}")
 
 
 if __name__ == "__main__":
