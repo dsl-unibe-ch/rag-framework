@@ -241,3 +241,37 @@ def make_manifest_entry(
         "chunk_ids": chunk_ids,
         "indexed_at": datetime.now(timezone.utc).isoformat(),
     }
+
+
+def load_sidecar_metadata(file_path: str) -> Dict:
+    """Load optional per-file metadata from a sidecar JSON file.
+
+    If a file ``{file_path}.meta.json`` exists next to the source document,
+    it is read and its contents returned.  This allows per-document metadata
+    (e.g. ``source_url``) to override global config values without requiring
+    changes to the config file.
+
+    Example sidecar file ``report.pdf.meta.json``::
+
+        {
+            "source_url": "https://example.com/reports/report.pdf"
+        }
+
+    Args:
+        file_path: Absolute path to the source document (not the sidecar).
+
+    Returns:
+        A dict with whatever keys the sidecar file contains, or an empty
+        dict if the sidecar does not exist or cannot be parsed.
+    """
+    sidecar_path = file_path + ".meta.json"
+    if not os.path.exists(sidecar_path):
+        return {}
+    try:
+        with open(sidecar_path, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        if isinstance(data, dict):
+            return data
+    except Exception as exc:
+        print(f"  Warning: could not read sidecar '{sidecar_path}': {exc}")
+    return {}

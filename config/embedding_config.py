@@ -57,3 +57,14 @@ semantic_max_chunk_sentences = 0
 # Default number of chunks returned from the vector database for each query.
 # Can be overridden at query time via the web UI or CLI arguments.
 n_results = 5
+
+
+# ---------------------------------------------------------------------------
+# Source metadata
+# ---------------------------------------------------------------------------
+# Optional URL indicating where the documents were sourced from.
+# Used as a global default; individual files can override this by placing a
+# sidecar file named "{filename}.meta.json" alongside them, e.g.:
+#   {"source_url": "https://example.com/my-doc.pdf"}
+# Leave as empty string if documents are local and have no upstream URL.
+source_url = ""

@@ -52,6 +52,10 @@
                         <p><strong>Content:</strong> {{ result.content }}</p>
                         <p><strong>File Name:</strong> {{ result.file_name }}</p>
                         <p><strong>Chunk ID:</strong> {{ result.chunk_id }}</p>
+                        {% if result.page_number %}<p><strong>Page:</strong> {{ result.page_number }}</p>{% endif %}
+                        {% if result.section_title %}<p><strong>Section:</strong> {{ result.section_title }}</p>{% endif %}
+                        {% if result.source_url %}<p><strong>Source:</strong> <a href="{{ result.source_url }}" target="_blank">{{ result.source_url }}</a></p>{% endif %}
+                        {% if result.ingest_date %}<p><strong>Indexed:</strong> {{ result.ingest_date }}</p>{% endif %}
                         <p><strong>Distance:</strong> {{ result.distance }}</p>
                     </div>
                 {% endfor %}

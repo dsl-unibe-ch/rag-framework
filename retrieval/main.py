@@ -30,8 +30,11 @@ class ChromaRetriever:
         
 
     def format_results_for_prompt(self, results):
-        """
-        Formats the retrieval results into a string suitable for the Responder's prompt.
+        """Format retrieval results into a string for the LLM prompt.
+
+        Includes provenance metadata (page, section, source URL, ingest date)
+        when available.  Fields are omitted when not present in the stored
+        metadata so older chunks without rich metadata still render correctly.
 
         Args:
             results: The dictionary returned by the retrieve method.
@@ -44,12 +47,18 @@ class ChromaRetriever:
 
         formatted_data = ""
         for idx, (doc, metadata) in enumerate(zip(results['documents'][0], results['metadatas'][0])):
-            chunk_id = metadata.get('chunk_id', 'N/A')
-            file_name = metadata.get('file_name', 'N/A')
             formatted_data += f"Document {idx + 1}:\n"
-            formatted_data += f"Document ID: {chunk_id}\n"
-            formatted_data += f"File Name: {file_name}\n"
-            formatted_data += f"Content:\n{doc}\n"
+            formatted_data += f"  File      : {metadata.get('file_name', 'N/A')}\n"
+            formatted_data += f"  Chunk ID  : {metadata.get('chunk_id', 'N/A')}\n"
+            if "page_number" in metadata:
+                formatted_data += f"  Page      : {metadata['page_number']}\n"
+            if "section_title" in metadata:
+                formatted_data += f"  Section   : {metadata['section_title']}\n"
+            if metadata.get("source_url"):
+                formatted_data += f"  Source URL: {metadata['source_url']}\n"
+            if "ingest_date" in metadata:
+                formatted_data += f"  Indexed   : {metadata['ingest_date']}\n"
+            formatted_data += f"  Content:\n{doc}\n"
             formatted_data += "-" * 80 + "\n"
 
         return formatted_data
@@ -102,20 +111,37 @@ class OpenAIChromaRetriever:
             return None
 
     def format_results_for_prompt(self, results):
+        """Format retrieval results into a string for the LLM prompt.
+
+        Includes provenance metadata (page, section, source URL, ingest date)
+        when available.  Fields are omitted when not present in the stored
+        metadata so older chunks without rich metadata still render correctly.
+
+        Args:
+            results: The dictionary returned by the retrieve method.
+
+        Returns:
+            A formatted string containing the retrieved data.
+        """
         if not results or not results['documents']:
+            return "No relevant data found."
+        if len(results['documents'][0]) == 0:
             return "No relevant data found."
 
         formatted_data = ""
-        if len(results['documents'][0]) == 0:
-             return "No relevant data found."
-
         for idx, (doc, metadata) in enumerate(zip(results['documents'][0], results['metadatas'][0])):
-            chunk_id = metadata.get('chunk_id', 'N/A')
-            file_name = metadata.get('file_name', 'N/A')
             formatted_data += f"Document {idx + 1}:\n"
-            formatted_data += f"Document ID: {chunk_id}\n"
-            formatted_data += f"File Name: {file_name}\n"
-            formatted_data += f"Content:\n{doc}\n"
+            formatted_data += f"  File      : {metadata.get('file_name', 'N/A')}\n"
+            formatted_data += f"  Chunk ID  : {metadata.get('chunk_id', 'N/A')}\n"
+            if "page_number" in metadata:
+                formatted_data += f"  Page      : {metadata['page_number']}\n"
+            if "section_title" in metadata:
+                formatted_data += f"  Section   : {metadata['section_title']}\n"
+            if metadata.get("source_url"):
+                formatted_data += f"  Source URL: {metadata['source_url']}\n"
+            if "ingest_date" in metadata:
+                formatted_data += f"  Indexed   : {metadata['ingest_date']}\n"
+            formatted_data += f"  Content:\n{doc}\n"
             formatted_data += "-" * 80 + "\n"
 
         return formatted_data

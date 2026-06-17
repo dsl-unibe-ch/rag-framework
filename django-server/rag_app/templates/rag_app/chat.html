@@ -147,6 +147,10 @@
                                         <p><strong>Document ${idx + 1}</strong></p>
                                         <p><strong>File Name:</strong> ${doc.file_name}</p>
                                         <p><strong>Chunk ID:</strong> ${doc.chunk_id}</p>
+                                        ${doc.page_number != null ? `<p><strong>Page:</strong> ${doc.page_number}</p>` : ''}
+                                        ${doc.section_title ? `<p><strong>Section:</strong> ${doc.section_title}</p>` : ''}
+                                        ${doc.source_url ? `<p><strong>Source:</strong> <a href="${doc.source_url}" target="_blank">${doc.source_url}</a></p>` : ''}
+                                        ${doc.ingest_date ? `<p><strong>Indexed:</strong> ${doc.ingest_date}</p>` : ''}
                                         <pre>${doc.content}</pre>
                                     </div>
                                     <hr/>

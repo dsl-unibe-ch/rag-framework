@@ -41,7 +41,8 @@ def create_chunks(
     breakpoint_percentile: float = 95.0,
     buffer_size: int = 1,
     max_chunk_sentences: int = 0,
-) -> List[str]:
+    return_indices: bool = False,
+) -> List:
     """Group sentences into chunks using the requested strategy.
 
     Args:
@@ -60,16 +61,25 @@ def create_chunks(
             only).
         max_chunk_sentences: Optional hard cap on the number of sentences
             in a semantic chunk. ``0`` disables the cap.
+        return_indices: When ``True``, return a list of
+            ``(chunk_text, first_sentence_index)`` tuples instead of plain
+            strings.  The index refers to the position of the first sentence
+            in the chunk within the input ``sentences`` list.
 
     Returns:
-        A list of chunk strings.
+        A list of chunk strings, or a list of ``(str, int)`` tuples when
+        ``return_indices`` is ``True``.
 
     Raises:
         ValueError: If ``method`` is unknown, or if the ``semantic``
             strategy is selected without an ``embed_fn``.
     """
     if method == SENTENCE_METHOD:
-        return chunk_sentences(sentences, chunk_size, overlap_size)
+        chunks = chunk_sentences(sentences, chunk_size, overlap_size)
+        if return_indices:
+            step = max(1, chunk_size - overlap_size)
+            return [(text, k * step) for k, text in enumerate(chunks)]
+        return chunks
 
     if method == SEMANTIC_METHOD:
         if embed_fn is None:
@@ -82,6 +92,7 @@ def create_chunks(
             breakpoint_percentile=breakpoint_percentile,
             buffer_size=buffer_size,
             max_chunk_sentences=max_chunk_sentences,
+            return_first_indices=return_indices,
         )
 
     raise ValueError(
@@ -96,7 +107,8 @@ def chunk_sentences_semantically(
     breakpoint_percentile: float = 95.0,
     buffer_size: int = 1,
     max_chunk_sentences: int = 0,
-) -> List[str]:
+    return_first_indices: bool = False,
+) -> List:
     """Group sentences into semantically coherent chunks.
 
     The algorithm embeds every sentence (optionally with a small window of
@@ -117,20 +129,27 @@ def chunk_sentences_semantically(
             each sentence on its own.
         max_chunk_sentences: Optional hard cap on the number of sentences
             per chunk. ``0`` disables the cap.
+        return_first_indices: When ``True``, return a list of
+            ``(chunk_text, first_sentence_index)`` tuples.
 
     Returns:
-        A list of chunk strings.
+        A list of chunk strings, or ``(str, int)`` tuples when
+        ``return_first_indices`` is ``True``.
     """
     cleaned = [s.strip() for s in sentences if s and s.strip()]
     if len(cleaned) <= 1:
-        return cleaned
+        result = cleaned
+        if return_first_indices:
+            return [(text, 0) for text in result]
+        return result
 
     combined = _combine_sentences(cleaned, buffer_size)
     embeddings = np.asarray(list(embed_fn(combined)), dtype=float)
     distances = _consecutive_cosine_distances(embeddings)
 
     if distances.size == 0:
-        return [" ".join(cleaned)]
+        chunk_text = " ".join(cleaned)
+        return [(chunk_text, 0)] if return_first_indices else [chunk_text]
 
     threshold = float(np.percentile(distances, breakpoint_percentile))
     # Index i in ``distances`` measures the gap between sentence i and i+1,
@@ -139,22 +158,29 @@ def chunk_sentences_semantically(
         i for i, distance in enumerate(distances) if distance > threshold
     }
 
-    chunks: List[str] = []
+    # raw_chunks holds (chunk_text, first_sentence_index) pairs.
+    raw_chunks: List = []
     current: List[str] = []
+    current_start: int = 0
     last_index = len(cleaned) - 1
+
     for i, sentence in enumerate(cleaned):
+        if not current:
+            current_start = i
         current.append(sentence)
         reached_cap = (
             max_chunk_sentences > 0 and len(current) >= max_chunk_sentences
         )
         if i in split_after or i == last_index or reached_cap:
-            chunks.append(" ".join(current))
+            raw_chunks.append((" ".join(current), current_start))
             current = []
 
     if current:
-        chunks.append(" ".join(current))
+        raw_chunks.append((" ".join(current), current_start))
 
-    return chunks
+    if return_first_indices:
+        return raw_chunks
+    return [text for text, _ in raw_chunks]
 
 
 def _combine_sentences(sentences: List[str], buffer_size: int) -> List[str]:

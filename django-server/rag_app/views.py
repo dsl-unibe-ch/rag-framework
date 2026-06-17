@@ -78,6 +78,10 @@ def search(request):
                 "content": doc,
                 "file_name": metadata.get("file_name", "N/A"),
                 "chunk_id": metadata.get("chunk_id", "N/A"),
+                "page_number": metadata.get("page_number"),
+                "section_title": metadata.get("section_title"),
+                "source_url": metadata.get("source_url", ""),
+                "ingest_date": metadata.get("ingest_date", ""),
                 "distance": distance,
             })
 
@@ -150,6 +154,10 @@ def chat_stream(request):
             doc_list_for_frontend.append({
                 "file_name": metadata.get('file_name', 'N/A'),
                 "chunk_id": metadata.get('chunk_id', 'N/A'),
+                "page_number": metadata.get('page_number'),
+                "section_title": metadata.get('section_title'),
+                "source_url": metadata.get('source_url', ''),
+                "ingest_date": metadata.get('ingest_date', ''),
                 "content": doc
             })
 

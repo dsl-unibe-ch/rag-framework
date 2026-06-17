@@ -278,3 +278,270 @@ def read_csv_file(
                 rows.append(pairs + ".")
 
     return "\n".join(rows)
+
+
+# ---------------------------------------------------------------------------
+# Section-aware HTML parser (used by read_document_sentences)
+# ---------------------------------------------------------------------------
+
+class _SectionHTMLParser(HTMLParser):
+    """HTML parser that tracks h1-h6 headings and collects text blocks.
+
+    Yields ``(section_title, block_text)`` pairs where ``section_title`` is
+    the text of the most recent heading encountered, or ``None`` if no
+    heading has been seen yet.
+    """
+
+    _HEADING_TAGS = frozenset({"h1", "h2", "h3", "h4", "h5", "h6"})
+    _SKIP_TAGS = frozenset({"script", "style", "head"})
+    _BLOCK_TAGS = frozenset({
+        "p", "div", "li", "td", "th", "article", "section",
+        "blockquote", "figcaption", "br",
+    })
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._current_section: Optional[str] = None
+        self._in_heading: bool = False
+        self._heading_buf: list[str] = []
+        self._block_buf: list[str] = []
+        self._skip: bool = False
+        self.blocks: list[tuple[Optional[str], str]] = []
+
+    def handle_starttag(self, tag: str, attrs) -> None:
+        if tag in self._SKIP_TAGS:
+            self._skip = True
+        elif tag in self._HEADING_TAGS:
+            self._flush_block()
+            self._in_heading = True
+            self._heading_buf = []
+        elif tag in self._BLOCK_TAGS:
+            self._flush_block()
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag in self._SKIP_TAGS:
+            self._skip = False
+        elif tag in self._HEADING_TAGS:
+            heading_text = " ".join(self._heading_buf).strip()
+            if heading_text:
+                self._current_section = heading_text
+            self._in_heading = False
+        elif tag in self._BLOCK_TAGS:
+            self._flush_block()
+
+    def handle_data(self, data: str) -> None:
+        if self._skip:
+            return
+        if self._in_heading:
+            self._heading_buf.append(data)
+        else:
+            self._block_buf.append(data)
+
+    def _flush_block(self) -> None:
+        text = " ".join(self._block_buf).strip()
+        if text:
+            self.blocks.append((self._current_section, text))
+        self._block_buf = []
+
+    def finalize(self) -> list[tuple[Optional[str], str]]:
+        """Flush any remaining buffered text and return all blocks."""
+        self._flush_block()
+        return self.blocks
+
+
+# ---------------------------------------------------------------------------
+# Private per-format sentence extractors with metadata
+# ---------------------------------------------------------------------------
+
+def _make_sent(
+    text: str,
+    page_number: Optional[int] = None,
+    section_title: Optional[str] = None,
+) -> dict:
+    """Build a sentence metadata dict.
+
+    Only non-None values are included so that ChromaDB, which requires
+    string/int/float/bool metadata values, never sees ``None``.
+    """
+    entry: dict = {"text": text}
+    if page_number is not None:
+        entry["page_number"] = page_number
+    if section_title is not None:
+        entry["section_title"] = section_title
+    return entry
+
+
+def _sentences_txt(file_path: str, language: str) -> list[dict]:
+    """Extract sentences from a plain-text file."""
+    text = read_text_file(file_path)
+    return [
+        _make_sent(s)
+        for s in nltk.sent_tokenize(text, language=language)
+        if s.strip()
+    ]
+
+
+def _sentences_pdf(file_path: str, language: str) -> list[dict]:
+    """Extract sentences from a PDF, tagging each with its page number."""
+    result: list[dict] = []
+    try:
+        with pdfplumber.open(file_path) as pdf:
+            for page_num, page in enumerate(pdf.pages, start=1):
+                try:
+                    page_text = page.extract_text() or ""
+                except Exception:
+                    continue
+                if not page_text.strip():
+                    continue
+                for sent in nltk.sent_tokenize(page_text, language=language):
+                    if sent.strip():
+                        result.append(_make_sent(sent, page_number=page_num))
+    except Exception as exc:
+        print(f"  Warning: could not fully read PDF '{file_path}': {exc}")
+    return result
+
+
+def _sentences_docx(file_path: str, language: str) -> list[dict]:
+    """Extract sentences from a Word document, tagging with heading sections."""
+    import docx  # python-docx
+
+    result: list[dict] = []
+    current_section: Optional[str] = None
+    try:
+        document = docx.Document(file_path)
+        for para in document.paragraphs:
+            text = para.text.strip()
+            if not text:
+                continue
+            if para.style.name.startswith("Heading"):
+                current_section = text
+            else:
+                for sent in nltk.sent_tokenize(text, language=language):
+                    if sent.strip():
+                        result.append(
+                            _make_sent(sent, section_title=current_section)
+                        )
+    except Exception as exc:
+        print(f"  Warning: could not fully read DOCX '{file_path}': {exc}")
+    return result
+
+
+def _sentences_html(file_path: str, language: str) -> list[dict]:
+    """Extract sentences from an HTML file, tagging with section headings."""
+    result: list[dict] = []
+    try:
+        with open(file_path, "r", encoding="utf-8", errors="replace") as fh:
+            html = fh.read()
+        parser = _SectionHTMLParser()
+        parser.feed(html)
+        blocks = parser.finalize()
+        for section_title, block_text in blocks:
+            for sent in nltk.sent_tokenize(block_text, language=language):
+                if sent.strip():
+                    result.append(_make_sent(sent, section_title=section_title))
+    except Exception as exc:
+        print(f"  Warning: could not fully read HTML '{file_path}': {exc}")
+    return result
+
+
+def _sentences_md(file_path: str, language: str) -> list[dict]:
+    """Extract sentences from a Markdown file, tagging with section headings."""
+    from markdown_it import MarkdownIt
+
+    result: list[dict] = []
+    current_section: Optional[str] = None
+    try:
+        with open(file_path, "r", encoding="utf-8", errors="replace") as fh:
+            source = fh.read()
+        tokens = MarkdownIt().parse(source)
+        in_heading = False
+        for tok in tokens:
+            if tok.type == "heading_open":
+                in_heading = True
+            elif tok.type == "heading_close":
+                in_heading = False
+            elif tok.type == "inline":
+                content = tok.content.strip()
+                if not content:
+                    continue
+                if in_heading:
+                    # Strip any remaining inline markdown syntax (e.g. **bold**)
+                    current_section = _html_to_text(
+                        MarkdownIt().render(content)
+                    ).strip() or content
+                else:
+                    for sent in nltk.sent_tokenize(content, language=language):
+                        if sent.strip():
+                            result.append(
+                                _make_sent(sent, section_title=current_section)
+                            )
+    except Exception as exc:
+        print(f"  Warning: could not fully read Markdown '{file_path}': {exc}")
+    return result
+
+
+def _sentences_csv(file_path: str) -> list[dict]:
+    """Return each non-empty CSV row as a sentence dict (no page/section)."""
+    result: list[dict] = []
+    try:
+        text = read_csv_file(file_path)
+        for line in text.splitlines():
+            if line.strip():
+                result.append(_make_sent(line.strip()))
+    except Exception as exc:
+        print(f"  Warning: could not fully read CSV '{file_path}': {exc}")
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Public entry point
+# ---------------------------------------------------------------------------
+
+_EXTENSION_MAP = {
+    ".txt": _sentences_txt,
+    ".pdf": _sentences_pdf,
+    ".docx": _sentences_docx,
+    ".html": _sentences_html,
+    ".htm": _sentences_html,
+    ".md": _sentences_md,
+    ".csv": _sentences_csv,
+}
+
+
+def read_document_sentences(
+    file_path: str,
+    language: str = "english",
+) -> list[dict]:
+    """Read a document and return its sentences as metadata-enriched dicts.
+
+    Each dict always contains ``"text"`` and optionally ``"page_number"``
+    (int, PDF only) and ``"section_title"`` (str, for structured formats).
+    Keys are omitted entirely when the value is not available, so callers
+    and ChromaDB never receive ``None`` values.
+
+    Supported extensions: ``.txt``, ``.pdf``, ``.docx``, ``.html``,
+    ``.htm``, ``.md``, ``.csv``.
+
+    Args:
+        file_path: Absolute path to the source document.
+        language: NLTK sentence-tokeniser language (default ``"english"``).
+
+    Returns:
+        A list of sentence dicts.  Returns an empty list if the file cannot
+        be read or produces no extractable text.
+
+    Raises:
+        ValueError: If the file extension is not supported.
+    """
+    ext = os.path.splitext(file_path)[1].lower()
+    extractor = _EXTENSION_MAP.get(ext)
+    if extractor is None:
+        raise ValueError(
+            f"Unsupported file extension '{ext}'. "
+            f"Supported: {sorted(_EXTENSION_MAP)}."
+        )
+    if ext in (".txt", ".pdf", ".docx", ".html", ".htm", ".md"):
+        return extractor(file_path, language)
+    # CSV has no language parameter
+    return extractor(file_path)
+

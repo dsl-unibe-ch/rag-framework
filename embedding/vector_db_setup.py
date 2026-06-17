@@ -20,6 +20,7 @@ alongside the ChromaDB data.
 import sys
 import os
 import chromadb
+from datetime import datetime, timezone
 from tqdm import tqdm
 from sentence_transformers import SentenceTransformer
 from openai import OpenAI
@@ -45,17 +46,12 @@ from config.embedding_config import (
     semantic_breakpoint_percentile,
     semantic_buffer_size,
     semantic_max_chunk_sentences,
+    source_url as default_source_url,
 )
 
 from embedding.utils import (
     get_file_paths,
-    read_text_file,
-    read_pdf_file,
-    read_docx_file,
-    read_html_file,
-    read_markdown_file,
-    read_csv_file,
-    split_text_into_sentences,
+    read_document_sentences,
 )
 from embedding.chunking import create_chunks
 from embedding.indexer import (
@@ -67,6 +63,7 @@ from embedding.indexer import (
     needs_reindex,
     get_stale_files,
     make_manifest_entry,
+    load_sidecar_metadata,
 )
 
 # Load environment variables (for OPENAI_API_KEY)
@@ -129,7 +126,17 @@ def index_file(
     collection,
     embed_texts,
 ) -> list[str]:
-    """Read, chunk, embed, and store a single document.
+    """Read, chunk, embed, and store a single document with rich metadata.
+
+    Each stored chunk includes:
+    - ``file_name``: basename of the source file (always present).
+    - ``chunk_id``: sequential integer index within the file (always present).
+    - ``ingest_date``: ISO-8601 UTC timestamp of this indexing run (always present).
+    - ``source_url``: from a per-file ``.meta.json`` sidecar or the global
+      config ``source_url`` setting; omitted when empty.
+    - ``page_number``: 1-indexed page number (PDF only).
+    - ``section_title``: heading under which the chunk appears (Markdown,
+      HTML, DOCX only).
 
     Args:
         file_path: Absolute path to the source file.
@@ -140,51 +147,74 @@ def index_file(
         The list of chunk IDs that were written, in order.  Returns an empty
         list if the file could not be processed.
     """
-    # Read
-    if file_path.endswith('.txt'):
-        text = read_text_file(file_path)
-    elif file_path.endswith('.pdf'):
-        text = read_pdf_file(file_path)
-    elif file_path.endswith('.docx'):
-        text = read_docx_file(file_path)
-    elif file_path.endswith(('.html', '.htm')):
-        text = read_html_file(file_path)
-    elif file_path.endswith('.md'):
-        text = read_markdown_file(file_path)
-    elif file_path.endswith('.csv'):
-        text = read_csv_file(file_path)
-    else:
-        print(f"  Unsupported file type: {file_path}")
+    # Load sentences with per-sentence page/section metadata.
+    try:
+        sentences_data = read_document_sentences(file_path, data_language)
+    except ValueError as exc:
+        print(f"  Unsupported file type: {exc}")
+        return []
+    except Exception as exc:
+        print(f"  Error reading '{os.path.basename(file_path)}': {exc}")
         return []
 
-    # Sentence-split → chunk
-    sentences = split_text_into_sentences(text, data_language)
-    chunks = create_chunks(
+    if not sentences_data:
+        print(f"  No text extracted from '{os.path.basename(file_path)}'.")
+        return []
+
+    sentence_texts = [s["text"] for s in sentences_data]
+
+    # Chunk with indices so we can look up the first sentence's metadata.
+    chunk_pairs = create_chunks(
         chunking_method,
-        sentences,
+        sentence_texts,
         chunk_size=chunk_size,
         overlap_size=overlap_size,
         embed_fn=embed_texts,
         breakpoint_percentile=semantic_breakpoint_percentile,
         buffer_size=semantic_buffer_size,
         max_chunk_sentences=semantic_max_chunk_sentences,
+        return_indices=True,
     )
 
     file_name = os.path.basename(file_path)
+    ingest_date = datetime.now(timezone.utc).isoformat()
+
+    # Per-file source_url: sidecar overrides global config.
+    sidecar = load_sidecar_metadata(file_path)
+    source_url = sidecar.get("source_url", default_source_url)
+
     written_ids: list[str] = []
 
-    for i, chunk_text in enumerate(chunks):
+    for i, (chunk_text, first_sent_idx) in enumerate(chunk_pairs):
+        # Derive chunk-level metadata from the first sentence in this chunk.
+        first_sent = sentences_data[
+            min(first_sent_idx, len(sentences_data) - 1)
+        ]
+
+        metadata: dict = {
+            "file_name": file_name,
+            "chunk_id": i,
+            "ingest_date": ingest_date,
+        }
+        # Only add optional fields when they carry a real value.
+        if source_url:
+            metadata["source_url"] = source_url
+        if "page_number" in first_sent:
+            metadata["page_number"] = first_sent["page_number"]
+        if "section_title" in first_sent:
+            metadata["section_title"] = first_sent["section_title"]
+
         try:
             embedding = embed_texts([chunk_text])[0]
-        except Exception as e:
-            print(f"  Error embedding chunk {i} of '{file_name}': {e}")
+        except Exception as exc:
+            print(f"  Error embedding chunk {i} of '{file_name}': {exc}")
             continue
 
         chunk_id = f"{file_name}_chunk_{i}"
-        collection.add(
+        collection.upsert(
             documents=[chunk_text],
             embeddings=[embedding],
-            metadatas=[{"file_name": file_name, "chunk_id": i}],
+            metadatas=[metadata],
             ids=[chunk_id],
         )
         written_ids.append(chunk_id)
