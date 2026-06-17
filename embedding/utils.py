@@ -1,6 +1,9 @@
+import csv
 import os
 import pdfplumber
 import nltk
+from html.parser import HTMLParser
+from typing import Optional
 
 
 nltk.download('punkt', quiet=True)
@@ -110,8 +113,168 @@ def chunk_sentences(sentences: list[str], chunk_size: int, overlap_size: int) ->
     return chunks
 
 
+# ---------------------------------------------------------------------------
+# HTML helper (used by both read_html_file and read_markdown_file)
+# ---------------------------------------------------------------------------
 
-    
-        
+class _TextExtractor(HTMLParser):
+    """Minimal HTMLParser subclass that collects visible text nodes."""
 
-    
+    def __init__(self) -> None:
+        super().__init__()
+        self._parts: list[str] = []
+        self._skip_tags = {"script", "style", "head"}
+        self._skip = False
+
+    def handle_starttag(self, tag: str, attrs) -> None:
+        if tag in self._skip_tags:
+            self._skip = True
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag in self._skip_tags:
+            self._skip = False
+        # Insert a space after block-level tags to prevent words merging.
+        if tag in {"p", "div", "li", "h1", "h2", "h3", "h4", "h5", "h6",
+                   "tr", "br"}:
+            self._parts.append(" ")
+
+    def handle_data(self, data: str) -> None:
+        if not self._skip:
+            self._parts.append(data)
+
+    def get_text(self) -> str:
+        return " ".join("".join(self._parts).split())
+
+
+def _html_to_text(html: str) -> str:
+    """Strip HTML tags and return clean visible text.
+
+    Args:
+        html: Raw HTML string.
+
+    Returns:
+        Plain text with whitespace normalised.
+    """
+    extractor = _TextExtractor()
+    extractor.feed(html)
+    return extractor.get_text()
+
+
+# ---------------------------------------------------------------------------
+# New file-type readers
+# ---------------------------------------------------------------------------
+
+def read_docx_file(file_path: str) -> str:
+    """Read a Word (.docx) document and return its text as a single string.
+
+    Paragraphs are joined with newlines.  Empty paragraphs (used in Word
+    for visual spacing) are omitted.
+
+    Args:
+        file_path: Path to the .docx file.
+
+    Returns:
+        The document's text content.
+    """
+    import docx  # python-docx; imported here to keep the module importable
+                  # even when the package is not installed.
+
+    document = docx.Document(file_path)
+    paragraphs = [p.text for p in document.paragraphs if p.text.strip()]
+    return "\n".join(paragraphs)
+
+
+def read_html_file(file_path: str, encoding: str = "utf-8") -> str:
+    """Read an HTML file and return its visible text content.
+
+    Tags, scripts, and style blocks are stripped.  Whitespace is normalised
+    to single spaces.
+
+    Args:
+        file_path: Path to the .html (or .htm) file.
+        encoding: File encoding (default ``utf-8``).
+
+    Returns:
+        Plain text extracted from the HTML.
+    """
+    with open(file_path, "r", encoding=encoding, errors="replace") as fh:
+        html = fh.read()
+    return _html_to_text(html)
+
+
+def read_markdown_file(file_path: str, encoding: str = "utf-8") -> str:
+    """Read a Markdown file and return its plain-text content.
+
+    The file is rendered to HTML via ``markdown-it-py`` (already a project
+    dependency) and then stripped of tags so the text passed to the
+    sentence tokeniser is clean prose rather than raw Markdown syntax.
+
+    Args:
+        file_path: Path to the .md file.
+        encoding: File encoding (default ``utf-8``).
+
+    Returns:
+        Plain text extracted from the Markdown source.
+    """
+    from markdown_it import MarkdownIt  # markdown-it-py is already installed.
+
+    with open(file_path, "r", encoding=encoding, errors="replace") as fh:
+        source = fh.read()
+
+    md = MarkdownIt()
+    html = md.render(source)
+    return _html_to_text(html)
+
+
+def read_csv_file(
+    file_path: str,
+    encoding: str = "utf-8",
+    delimiter: str = ",",
+    has_header: bool = True,
+    max_rows: Optional[int] = None,
+) -> str:
+    """Read a CSV file and return its contents as human-readable prose.
+
+    Each data row is serialised as ``"column: value, column: value."`` so
+    that the sentence tokeniser can treat individual rows as discrete units.
+
+    Args:
+        file_path: Path to the .csv file.
+        encoding: File encoding (default ``utf-8``).
+        delimiter: Column delimiter (default ``,``).
+        has_header: When ``True`` (default) the first row is treated as
+            column names.  When ``False`` columns are labelled ``col_0``,
+            ``col_1``, etc.
+        max_rows: Optional cap on the number of data rows read.  ``None``
+            reads all rows.
+
+    Returns:
+        A single string with one sentence per row, ready for sentence
+        tokenisation.
+    """
+    rows: list[str] = []
+
+    with open(file_path, "r", encoding=encoding, errors="replace",
+              newline="") as fh:
+        if has_header:
+            reader = csv.DictReader(fh, delimiter=delimiter)
+            for idx, row in enumerate(reader):
+                if max_rows is not None and idx >= max_rows:
+                    break
+                pairs = ", ".join(
+                    f"{key}: {val.strip()}"
+                    for key, val in row.items()
+                    if val and val.strip()
+                )
+                rows.append(pairs + ".")
+        else:
+            plain = csv.reader(fh, delimiter=delimiter)
+            for idx, row in enumerate(plain):
+                if max_rows is not None and idx >= max_rows:
+                    break
+                pairs = ", ".join(
+                    f"col_{i}: {val.strip()}" for i, val in enumerate(row)
+                )
+                rows.append(pairs + ".")
+
+    return "\n".join(rows)

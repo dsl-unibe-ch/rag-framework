@@ -51,6 +51,10 @@ from embedding.utils import (
     get_file_paths,
     read_text_file,
     read_pdf_file,
+    read_docx_file,
+    read_html_file,
+    read_markdown_file,
+    read_csv_file,
     split_text_into_sentences,
 )
 from embedding.chunking import create_chunks
@@ -141,6 +145,14 @@ def index_file(
         text = read_text_file(file_path)
     elif file_path.endswith('.pdf'):
         text = read_pdf_file(file_path)
+    elif file_path.endswith('.docx'):
+        text = read_docx_file(file_path)
+    elif file_path.endswith(('.html', '.htm')):
+        text = read_html_file(file_path)
+    elif file_path.endswith('.md'):
+        text = read_markdown_file(file_path)
+    elif file_path.endswith('.csv'):
+        text = read_csv_file(file_path)
     else:
         print(f"  Unsupported file type: {file_path}")
         return []
@@ -234,7 +246,7 @@ def main():
     # ---------------------------------------------------------
     # 3. Discover source files and open/create the collection
     # ---------------------------------------------------------
-    file_paths = get_file_paths(raw_db, ["txt", "pdf"])
+    file_paths = get_file_paths(raw_db, ["txt", "pdf", "docx", "md", "html", "htm", "csv"])
     print(f"Found {len(file_paths)} source files.")
 
     collection = client.get_or_create_collection(collection_name)
