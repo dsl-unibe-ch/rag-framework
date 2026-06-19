@@ -2,6 +2,10 @@ import chromadb
 from sentence_transformers import SentenceTransformer
 from openai import OpenAI
 
+# Module-level cache so each unique model name is loaded only once across
+# all requests in the same Django worker process.
+_ST_MODEL_CACHE: dict[str, SentenceTransformer] = {}
+
 class ChromaRetriever:
     """
     A class for retrieving documents from a ChromaDB collection based on semantic similarity using embeddings.
@@ -11,7 +15,11 @@ class ChromaRetriever:
         self.db_path = db_path
         self.db_collection = db_collection
         self.n_results = n_results
-        self.model = SentenceTransformer(self.embedding_model, trust_remote_code=True)
+        if self.embedding_model not in _ST_MODEL_CACHE:
+            _ST_MODEL_CACHE[self.embedding_model] = SentenceTransformer(
+                self.embedding_model, trust_remote_code=True
+            )
+        self.model = _ST_MODEL_CACHE[self.embedding_model]
         self.client = chromadb.PersistentClient(path=self.db_path)
         self.collection = self.client.get_collection(name=self.db_collection)
 
@@ -25,7 +33,7 @@ class ChromaRetriever:
                 Falls back to *query* when ``None``.
         """
         try:
-            text_to_embed = embed_text if embed_text is not None else query
+            text_to_embed = embed_text if embed_text else query
             embedded_query = self.model.encode(text_to_embed).tolist()
             results = self.collection.query(
                 query_embeddings=[embedded_query],
@@ -107,7 +115,7 @@ class OpenAIChromaRetriever:
                 Falls back to *query* when ``None``.
         """
         try:
-            text_to_embed = embed_text if embed_text is not None else query
+            text_to_embed = embed_text if embed_text else query
             clean_query = text_to_embed.replace("\n", " ")
             
             response = self.client_openai.embeddings.create(

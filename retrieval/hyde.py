@@ -57,8 +57,10 @@ def generate_hypothetical_document(
     except Exception as exc:
         # Graceful degradation: fall back to the original query so retrieval
         # still proceeds even if the LLM call fails.
+        # Return None so callers know generation failed and can skip
+        # the HyDE UI element rather than showing the raw query.
         print(f"[HyDE] Failed to generate hypothetical document: {exc}")
-        return query
+        return None
 
 
 def generate_hypothetical_document_ollama(
@@ -90,9 +92,18 @@ def generate_hypothetical_document_ollama(
                 {"role": "system", "content": _HYDE_SYSTEM_PROMPT},
                 {"role": "user", "content": query},
             ],
+            # think=False prevents qwen3/deepseek thinking models from
+            # putting their entire output into the "thinking" field and
+            # leaving "content" empty.
+            think=False,
             options={"num_predict": max_tokens},
         )
-        return response["message"]["content"].strip()
+        content = response.message.content.strip()
+        # Treat empty content (e.g. thinking-only response) as a failure.
+        if not content:
+            print("[HyDE] Ollama returned empty content; falling back.")
+            return None
+        return content
     except Exception as exc:
         print(f"[HyDE] Ollama generation failed: {exc}")
-        return query
+        return None

@@ -22,7 +22,7 @@ collection = client.get_collection(name=collection_name)
 query_text = "I am looking for books about war"
 
 # Initialize the embedding model (same as used during indexing)
-embedding_model = SentenceTransformer(model_name)
+embedding_model = SentenceTransformer(model_name, trust_remote_code=True)
 
 # Embed the query text
 query_embedding = embedding_model.encode(query_text)

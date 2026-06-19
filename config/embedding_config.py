@@ -1,7 +1,15 @@
 # this file containst default values related to embeddings and creating vectordb
 import os
 
-model_name = "Lajavaness/bilingual-embedding-large"  #choose any embedding model you prefer that runs in sentence-transformers
+# Local SentenceTransformer model used when use_openai_embeddings = False.
+
+#
+#   "sentence-transformers/all-MiniLM-L6-v2"          -- small (90 MB), fast, English
+#   "sentence-transformers/all-mpnet-base-v2"          -- larger, better quality, English
+#   "sentence-transformers/paraphrase-multilingual-mpnet-base-v2"  -- multilingual
+#   "BAAI/bge-m3"                                      -- multilingual, state-of-the-art
+#   "intfloat/multilingual-e5-large"                   -- multilingual, very strong
+model_name = "BAAI/bge-m3"
 
 # settings if using openai embeddings api or any openai compatible embedding api
 use_openai_embeddings = False # set to True if you want to use openai embeddings api
@@ -19,9 +27,7 @@ data_language = "english" #variable for the tokenizer. Supported language = ['cz
 
 db_directory = os.path.join(os.path.expanduser('~'), '.db')  #default. Change it to where you want to store the vector DB
 
-chunk_size = 20   #number of sentences each chunk will contain in the vector db
 
-overlap_size = 5 # must be less than the chunk_size. It indicates how many sentences overlaps when splitting chunks
 
 
 # ---------------------------------------------------------------------------
@@ -38,7 +44,7 @@ overlap_size = 5 # must be less than the chunk_size. It indicates how many sente
 #                 the token limit (token_chunk_size) is reached, then starts a
 #                 new chunk. Produces predictably sized chunks for any LLM
 #                 context window (uses the token_* settings below).
-chunking_method = "token"
+chunking_method = "sentence"
 
 # --- Semantic chunking settings (only used when chunking_method == "semantic") ---
 
@@ -72,6 +78,12 @@ token_chunk_overlap = 50
 # reasonable universal approximation.  Change to match your LLM's tokeniser
 # if you need exact counts (e.g. "p50k_base" for older GPT-3 models).
 token_encoding = "cl100k_base"
+
+# --- Sentence-based chunking settings (only used when chunking_method == "sentence") ---
+chunk_size = 40   #number of sentences each chunk will contain in the vector db
+
+overlap_size = 5 # must be less than the chunk_size. It indicates how many sentences overlaps when splitting chunks
+
 
 # ---------------------------------------------------------------------------
 # Embedding batch size

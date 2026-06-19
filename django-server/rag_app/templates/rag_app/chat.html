@@ -98,7 +98,12 @@
             }
             const reader = response.body.getReader();
             const decoder = new TextDecoder('utf-8');
+            // buffer accumulates ALL received bytes across reads.
+            // We never reset it so the <|DOCS_JSON|> marker is detected
+            // even if it straddles two consecutive network reads.
             let buffer = '';
+            // Track how many chars of buffer we have already displayed.
+            let displayed = 0;
 
             function readChunk() {
                 return reader.read().then(({ done, value }) => {
@@ -108,25 +113,26 @@
 
                     const markerIndex = buffer.indexOf('<|DOCS_JSON|>');
                     if (markerIndex !== -1) {
-                        // Everything before the marker is normal LLM text
-                        const normalText = buffer.slice(0, markerIndex);
-                        const docsText  = buffer.slice(markerIndex + '<|DOCS_JSON|>'.length);
+                        // Display any LLM text that came before the marker
+                        // and hasn't been shown yet.
+                        const beforeMarker = buffer.slice(displayed, markerIndex);
+                        if (beforeMarker) {
+                            botResponseElem.textContent += beforeMarker;
+                            chatBox.scrollTop = chatBox.scrollHeight;
+                        }
 
-                        botResponseElem.textContent += normalText;
-                        chatBox.scrollTop = chatBox.scrollHeight;
-
-                        // Parse meta payload: { docs: [...], hyde_doc: str|null }
+                        const docsText = buffer.slice(markerIndex + '<|DOCS_JSON|>'.length);
                         let docsData = [];
                         let hydeDoc  = null;
                         try {
                             const metaPayload = JSON.parse(docsText);
-                            docsData = metaPayload.docs    || [];
+                            docsData = metaPayload.docs     || [];
                             hydeDoc  = metaPayload.hyde_doc || null;
                         } catch (e) {
-                            console.error('Error parsing docs JSON:', e);
+                            console.error('[RAG] Error parsing DOCS_JSON:', e, 'raw:', docsText);
                         }
 
-                        // Collapsible HyDE section
+                        // Collapsible HyDE section (only when a real hypothesis was generated)
                         if (hydeDoc) {
                             const hydeToggle = document.createElement('a');
                             hydeToggle.href = '#';
@@ -172,13 +178,16 @@
                             });
                             docsContainer.innerHTML = html;
                         }
-                        return;
+                        return; // done reading
                     }
 
-                    // No marker yet — everything is normal LLM text
-                    botResponseElem.textContent += buffer.replace('<|DOCS_JSON|>', '');
-                    buffer = '';
-                    chatBox.scrollTop = chatBox.scrollHeight;
+                    // No marker yet: display only the new bytes we haven't shown.
+                    const newText = buffer.slice(displayed);
+                    if (newText) {
+                        botResponseElem.textContent += newText;
+                        chatBox.scrollTop = chatBox.scrollHeight;
+                    }
+                    displayed = buffer.length;
                     return readChunk();
                 });
             }

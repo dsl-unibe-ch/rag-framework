@@ -18,6 +18,7 @@ import sys
 from dotenv import load_dotenv
 
 parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+load_dotenv(os.path.join(parent_dir, ".env"))
 sys.path.append(parent_dir)
 
 from retrieval.main import ChromaRetriever, OpenAIChromaRetriever
@@ -123,6 +124,10 @@ def main() -> None:
             print(f"\n[HyDE doc]: {hyde_doc}\n")
 
         results = retriever.retrieve(query, embed_text=hyde_doc)
+
+        if not results or not results.get("documents", [[]])[0]:
+            print("No results found.")
+            continue
 
         print("\n--- Query Results ---\n")
         for idx, (doc, metadata, distance) in enumerate(

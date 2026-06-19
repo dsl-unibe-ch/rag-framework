@@ -34,7 +34,7 @@ class Responder:
         """
         self._check_model()
         try:
-            model_output = ollama.generate(model=self.model, prompt=self.prompt)
+            model_output = ollama.generate(model=self.model, prompt=self.prompt, think=False)
             return model_output['response']
         except KeyError as e:
             raise ValueError(f"Response does not contain expected key: {e}")
@@ -48,7 +48,7 @@ class Responder:
         """
         self._check_model()
         try:
-            response_generator = ollama.generate(model=self.model, prompt=self.prompt, stream=True)
+            response_generator = ollama.generate(model=self.model, prompt=self.prompt, think=False, stream=True)
             
             for chunk in response_generator:
                 print(chunk['response'], end='', flush=True)
@@ -67,7 +67,7 @@ class Responder:
         """
         self._check_model()
         try:
-            response_generator = ollama.generate(model=self.model, prompt=self.prompt, stream=True)
+            response_generator = ollama.generate(model=self.model, prompt=self.prompt, think=False, stream=True)
             for chunk in response_generator:
                 yield chunk['response']
         except KeyError as e:

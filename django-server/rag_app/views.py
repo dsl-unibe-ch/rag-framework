@@ -103,6 +103,9 @@ def search(request):
 
         raw_results = retriever.retrieve(query, embed_text=hyde_doc)
 
+        if not raw_results:
+            raw_results = {"documents": [[]], "metadatas": [[]], "distances": [[]]}
+
         documents = raw_results.get("documents", [[]])[0]
         metadatas = raw_results.get("metadatas", [[]])[0]
         distances = raw_results.get("distances", [[]])[0]
@@ -204,28 +207,37 @@ def chat_stream(request):
             hyde_doc = generate_hypothetical_document_ollama(user_query, llm_model)
 
     # -- 1) Build retriever
-    if use_openai_embeddings:
-        load_dotenv(os.path.join(settings.BASE_DIR.parent, '.env'))
-        openai_client = OpenAI(
-            api_key=os.environ.get("OPENAI_API_KEY"),
-            base_url=openai_embedding_base_url,
-        )
-        retriever = OpenAIChromaRetriever(
-            openai_client=openai_client,
-            embedding_model=openai_embedding_model,
-            db_path=db_directory,
-            db_collection=collection_name,
-            n_results=n_results,
-        )
-    else:
-        retriever = ChromaRetriever(
-            embedding_model=model_name,
-            db_path=db_directory,
-            db_collection=collection_name,
-            n_results=n_results,
-        )
+    try:
+        if use_openai_embeddings:
+            load_dotenv(os.path.join(settings.BASE_DIR.parent, '.env'))
+            openai_client = OpenAI(
+                api_key=os.environ.get("OPENAI_API_KEY"),
+                base_url=openai_embedding_base_url,
+            )
+            retriever = OpenAIChromaRetriever(
+                openai_client=openai_client,
+                embedding_model=openai_embedding_model,
+                db_path=db_directory,
+                db_collection=collection_name,
+                n_results=n_results,
+            )
+        else:
+            retriever = ChromaRetriever(
+                embedding_model=model_name,
+                db_path=db_directory,
+                db_collection=collection_name,
+                n_results=n_results,
+            )
+    except Exception as exc:
+        err = f"Could not open collection '{collection_name}': {exc}"
+        print(f"[chat_stream] {err}")
+        return JsonResponse({"error": err}, status=500)
 
-    # -- 2) Retrieve (using HyDE doc as embed text when available)
+    # -- 2) Retrieve (using HyDE doc as embed text when available).
+    # hyde_doc is None when HyDE is disabled OR when generation failed;
+    # in both cases embed_text=None makes retrieve() use the raw query.
+    if hyde_doc:
+        print(f"[HyDE] Using hypothetical doc ({len(hyde_doc)} chars) for retrieval")
     search_results = retriever.retrieve(user_query, embed_text=hyde_doc)
     formatted_result = retriever.format_results_for_prompt(search_results)
 
