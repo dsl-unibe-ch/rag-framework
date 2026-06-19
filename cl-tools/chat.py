@@ -41,6 +41,7 @@ from config.llm_config import (
     openai_base_url,
     use_hyde as config_use_hyde,
 )
+from config.embedding_config import use_hybrid_search as config_use_hybrid
 
 
 def _create_parser() -> argparse.ArgumentParser:
@@ -60,6 +61,21 @@ def _create_parser() -> argparse.ArgumentParser:
         action="store_false",
         help="Disable HyDE regardless of llm_config.py setting.",
     )
+    hybrid_group = parser.add_mutually_exclusive_group()
+    hybrid_group.add_argument(
+        "--hybrid",
+        dest="use_hybrid",
+        action="store_true",
+        default=None,
+        help="Enable hybrid BM25+vector search with RRF. "
+             "Overrides use_hybrid_search in embedding_config.py.",
+    )
+    hybrid_group.add_argument(
+        "--no-hybrid",
+        dest="use_hybrid",
+        action="store_false",
+        help="Disable hybrid search regardless of embedding_config.py setting.",
+    )
     return parser
 
 
@@ -68,6 +84,10 @@ def main() -> None:
     args = _create_parser().parse_args()
     # None means the flag was not passed → fall back to config
     hyde_enabled = config_use_hyde if args.use_hyde is None else args.use_hyde
+    hybrid_enabled = config_use_hybrid if args.use_hybrid is None else args.use_hybrid
+
+    if hybrid_enabled:
+        print("[Hybrid search enabled] BM25 + vector results will be fused with RRF.")
 
     if hyde_enabled:
         print("[HyDE enabled] A hypothetical answer will be generated before each retrieval.")
@@ -118,7 +138,7 @@ def main() -> None:
 
             print(f"\n[HyDE doc]: {hyde_doc}\n")
 
-        search_results = retriever.retrieve(user_query, embed_text=hyde_doc)
+        search_results = retriever.retrieve(user_query, embed_text=hyde_doc, use_hybrid=hybrid_enabled)
         formatted_result = retriever.format_results_for_prompt(search_results)
 
         if use_openai:

@@ -37,6 +37,11 @@
                 <input type="checkbox" id="use_hyde_search" value="1" {% if hyde_enabled %}checked{% endif %}>
                 HyDE
             </label>
+            <label class="hyde-label" for="use_hybrid_search" title="Hybrid search: fuse BM25 keyword results with vector results using Reciprocal Rank Fusion. Improves recall for exact names, IDs, and rare terms.">
+                <input type="hidden" id="use_hybrid_hidden" name="use_hybrid" value="0">
+                <input type="checkbox" id="use_hybrid_search" value="1" {% if hybrid_enabled %}checked{% endif %}>
+                Hybrid (BM25 + Vector)
+            </label>
             <br>
             <button type="submit" class="cta-button" id="search-button">Search</button>
         </div>
@@ -91,6 +96,12 @@ const hydeHidden   = document.getElementById('use_hyde_hidden');
 function syncHydeInput() { hydeHidden.value = hydeCheckbox.checked ? '1' : '0'; }
 hydeCheckbox.addEventListener('change', syncHydeInput);
 syncHydeInput(); // set correct value on page load
+
+const hybridCheckbox = document.getElementById('use_hybrid_search');
+const hybridHidden   = document.getElementById('use_hybrid_hidden');
+function syncHybridInput() { hybridHidden.value = hybridCheckbox.checked ? '1' : '0'; }
+hybridCheckbox.addEventListener('change', syncHybridInput);
+syncHybridInput();
 
 document.getElementById('search-form').addEventListener('submit', function() {
     const loadingIndicator = document.getElementById('loading-indicator');

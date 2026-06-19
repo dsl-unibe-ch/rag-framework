@@ -113,3 +113,27 @@ n_results = 5
 #   {"source_url": "https://example.com/my-doc.pdf"}
 # Leave as empty string if documents are local and have no upstream URL.
 source_url = ""
+
+
+# ---------------------------------------------------------------------------
+# Hybrid search  (BM25 keyword  +  vector)  with Reciprocal Rank Fusion
+# ---------------------------------------------------------------------------
+# When True, a keyword-based BM25 index of all stored chunks is queried in
+# parallel with the normal vector search.  The two ranked lists are merged
+# with Reciprocal Rank Fusion (RRF) before the final results are returned.
+#
+# Benefits:
+#   * Exact-match recall for names, IDs, and rare terms that dense embeddings
+#     often miss.
+#   * Robust across queries that are either keyword-like or semantic.
+# Can be toggled per-request from the web UI or CLI --hybrid / --no-hybrid.
+use_hybrid_search = False
+
+# RRF constant k.  The standard default (60) works well in practice.
+# Higher values reduce the penalty for lower-ranked results.
+hybrid_rrf_k = 60
+
+# Candidate multiplier.  Before fusing, each source retrieves
+# n_results * hybrid_candidates candidates.  More candidates → better fusion
+# quality at the cost of slightly more BM25 work.
+hybrid_candidates = 3

@@ -25,6 +25,10 @@
                 <input type="checkbox" id="use_hyde" {% if config_use_hyde %}checked{% endif %}>
                 HyDE
             </label>
+            <label class="hyde-label" for="use_hybrid" title="Hybrid search: fuse BM25 keyword results with vector results using Reciprocal Rank Fusion. Improves recall for exact names, IDs, and rare terms.">
+                <input type="checkbox" id="use_hybrid" {% if config_use_hybrid %}checked{% endif %}>
+                Hybrid (BM25 + Vector)
+            </label>
             <button type="submit">Send</button>
         </div>
     </form>
@@ -84,6 +88,7 @@
         formData.append('query', userQuery);
         formData.append('n_results', document.getElementById('n_results').value);
         formData.append('use_hyde', document.getElementById('use_hyde').checked ? '1' : '0');
+        formData.append('use_hybrid', document.getElementById('use_hybrid').checked ? '1' : '0');
         formData.append('csrfmiddlewaretoken',
             document.querySelector('[name=csrfmiddlewaretoken]').value);
 
@@ -163,6 +168,15 @@
                             hydeWarn.className = 'hyde-label-text';
                             hydeWarn.textContent = '⚠️ HyDE was enabled but hypothesis generation failed. Raw query used for retrieval.';
                             botMsgDiv.insertBefore(hydeWarn, docsToggleLink);
+                        }
+
+                        // Hybrid search badge
+                        const hybridUsed = metaPayload ? (metaPayload.hybrid_used || false) : false;
+                        if (hybridUsed) {
+                            const hybridBadge = document.createElement('p');
+                            hybridBadge.className = 'hyde-label-text';
+                            hybridBadge.textContent = '\u26a1 Hybrid search (BM25 + Vector) was used for retrieval.';
+                            botMsgDiv.insertBefore(hybridBadge, docsToggleLink);
                         }
 
                         // Collapsible retrieved documents section

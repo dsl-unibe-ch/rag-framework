@@ -17,6 +17,7 @@ from config.embedding_config import (
     openai_embedding_model,
     openai_embedding_base_url,
     n_results as default_n_results,
+    use_hybrid_search as config_use_hybrid,
 )
 from llm.main import Responder, OpenAIResponder
 from config.llm_config import (
@@ -61,6 +62,8 @@ def search(request):
         # HyDE: UI checkbox overrides the config default.
         ui_hyde = request.POST.get('use_hyde')
         hyde_enabled = (ui_hyde == '1') if ui_hyde is not None else config_use_hyde
+        ui_hybrid = request.POST.get('use_hybrid')
+        hybrid_enabled = (ui_hybrid == '1') if ui_hybrid is not None else config_use_hybrid
 
         if use_openai_embeddings:
             load_dotenv(os.path.join(settings.BASE_DIR.parent, '.env'))
@@ -101,7 +104,7 @@ def search(request):
             else:
                 hyde_doc = generate_hypothetical_document_ollama(query, llm_model)
 
-        raw_results = retriever.retrieve(query, embed_text=hyde_doc)
+        raw_results = retriever.retrieve(query, embed_text=hyde_doc, use_hybrid=hybrid_enabled)
 
         if not raw_results:
             raw_results = {"documents": [[]], "metadatas": [[]], "distances": [[]]}
@@ -134,6 +137,7 @@ def search(request):
                 "config_use_hyde": config_use_hyde,
                 "hyde_enabled": hyde_enabled,
                 "hyde_doc": hyde_doc,
+                "hybrid_enabled": hybrid_enabled,
             },
         )
 
@@ -148,6 +152,7 @@ def search(request):
             "config_use_hyde": config_use_hyde,
             "hyde_enabled": config_use_hyde,
             "hyde_doc": None,
+            "hybrid_enabled": config_use_hybrid,
         },
     )
 
@@ -159,6 +164,7 @@ def chat_page(request):
         'record_data': record_data,
         'default_n_results': default_n_results,
         'config_use_hyde': config_use_hyde,
+        'config_use_hybrid': config_use_hybrid,
     })
 
 
@@ -192,6 +198,8 @@ def chat_stream(request):
         hyde_enabled = ui_hyde == '1'
     else:
         hyde_enabled = config_use_hyde
+    ui_hybrid = request.POST.get('use_hybrid')
+    hybrid_enabled = (ui_hybrid == '1') if ui_hybrid is not None else config_use_hybrid
 
     # Generate hypothetical document before retrieval when HyDE is active.
     hyde_doc = None
@@ -238,7 +246,7 @@ def chat_stream(request):
     # in both cases embed_text=None makes retrieve() use the raw query.
     if hyde_doc:
         print(f"[HyDE] Using hypothetical doc ({len(hyde_doc)} chars) for retrieval")
-    search_results = retriever.retrieve(user_query, embed_text=hyde_doc)
+    search_results = retriever.retrieve(user_query, embed_text=hyde_doc, use_hybrid=hybrid_enabled)
     formatted_result = retriever.format_results_for_prompt(search_results)
 
     doc_list_for_frontend = []
@@ -293,6 +301,7 @@ def chat_stream(request):
             "docs": doc_list_for_frontend,
             "hyde_doc": hyde_doc,
             "hyde_requested": hyde_enabled,
+            "hybrid_used": hybrid_enabled,
         }
         yield f"<|DOCS_JSON|>{json.dumps(meta_payload)}"
 
