@@ -10,3 +10,4 @@ django-environ==0.13.0
 tqdm==4.68.2
 python-docx==1.2.0
 tiktoken
+markdown-it-py==4.2.0
