@@ -33,7 +33,8 @@
             >
             <br>
             <label class="hyde-label" for="use_hyde_search" title="HyDE: generate a hypothetical answer first and embed that instead of your raw question.">
-                <input type="checkbox" id="use_hyde_search" name="use_hyde" value="1" {% if hyde_enabled %}checked{% endif %}>
+                <input type="hidden" id="use_hyde_hidden" name="use_hyde" value="0">
+                <input type="checkbox" id="use_hyde_search" value="1" {% if hyde_enabled %}checked{% endif %}>
                 HyDE
             </label>
             <br>
@@ -54,8 +55,12 @@
             {% if hyde_doc %}
             <div class="hyde-info">
                 <p class="hyde-label-text">&#x1F4A1; Hypothetical document used for retrieval (HyDE):</p>
-                <a href="#" class="hyde-toggle-link" id="hyde-search-toggle">Show hypothetical document &#x25BC;</a>
-                <div id="hyde-search-content" class="hyde-content" style="display:none">{{ hyde_doc }}</div>
+                <a href="#" class="hyde-toggle-link" id="hyde-search-toggle">Hide hypothetical document &#x25B2;</a>
+                <div id="hyde-search-content" class="hyde-content">{{ hyde_doc }}</div>
+            </div>
+            {% elif hyde_enabled %}
+            <div class="hyde-info">
+                <p class="hyde-label-text">&#x26A0;&#xFE0F; HyDE was enabled but the hypothetical document could not be generated. The raw query was used for retrieval.</p>
             </div>
             {% endif %}
             {% if data %}
@@ -80,6 +85,13 @@
 
 <script>
 // Show loading indicator on form submission
+// Keep hidden use_hyde input in sync with the checkbox.
+const hydeCheckbox = document.getElementById('use_hyde_search');
+const hydeHidden   = document.getElementById('use_hyde_hidden');
+function syncHydeInput() { hydeHidden.value = hydeCheckbox.checked ? '1' : '0'; }
+hydeCheckbox.addEventListener('change', syncHydeInput);
+syncHydeInput(); // set correct value on page load
+
 document.getElementById('search-form').addEventListener('submit', function() {
     const loadingIndicator = document.getElementById('loading-indicator');
     const searchButton = document.getElementById('search-button');

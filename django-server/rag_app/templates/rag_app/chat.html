@@ -124,24 +124,26 @@
                         const docsText = buffer.slice(markerIndex + '<|DOCS_JSON|>'.length);
                         let docsData = [];
                         let hydeDoc  = null;
+                        let metaPayload = null;
                         try {
-                            const metaPayload = JSON.parse(docsText);
+                            metaPayload = JSON.parse(docsText);
                             docsData = metaPayload.docs     || [];
                             hydeDoc  = metaPayload.hyde_doc || null;
                         } catch (e) {
                             console.error('[RAG] Error parsing DOCS_JSON:', e, 'raw:', docsText);
                         }
 
-                        // Collapsible HyDE section (only when a real hypothesis was generated)
+                        // Collapsible HyDE section
+                        const hydeRequested = metaPayload ? (metaPayload.hyde_requested || false) : false;
                         if (hydeDoc) {
                             const hydeToggle = document.createElement('a');
                             hydeToggle.href = '#';
                             hydeToggle.className = 'hyde-toggle-link';
-                            hydeToggle.textContent = 'View hypothetical document used for retrieval (HyDE \u25bc)';
+                            hydeToggle.textContent = 'Hide hypothetical document (HyDE ▲)';
 
                             const hydeBox = document.createElement('div');
                             hydeBox.className = 'hyde-content';
-                            hydeBox.style.display = 'none';
+                            hydeBox.style.display = 'block';
                             hydeBox.textContent = hydeDoc;
 
                             hydeToggle.addEventListener('click', function(e) {
@@ -149,12 +151,18 @@
                                 const hidden = hydeBox.style.display === 'none';
                                 hydeBox.style.display = hidden ? 'block' : 'none';
                                 hydeToggle.textContent = hidden
-                                    ? 'Hide hypothetical document (HyDE \u25b2)'
-                                    : 'View hypothetical document used for retrieval (HyDE \u25bc)';
+                                    ? 'Hide hypothetical document (HyDE ▲)'
+                                    : 'View hypothetical document used for retrieval (HyDE ▼)';
                             });
 
                             botMsgDiv.insertBefore(hydeToggle, docsToggleLink);
                             botMsgDiv.insertBefore(hydeBox,    docsToggleLink);
+                        } else if (hydeRequested) {
+                            // HyDE was enabled but generation failed
+                            const hydeWarn = document.createElement('p');
+                            hydeWarn.className = 'hyde-label-text';
+                            hydeWarn.textContent = '⚠️ HyDE was enabled but hypothesis generation failed. Raw query used for retrieval.';
+                            botMsgDiv.insertBefore(hydeWarn, docsToggleLink);
                         }
 
                         // Collapsible retrieved documents section

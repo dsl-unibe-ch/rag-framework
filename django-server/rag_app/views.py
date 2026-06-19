@@ -279,14 +279,20 @@ def chat_stream(request):
     # -- 4) Streaming generator
     def stream_generator():
         full_response = ""
-        for chunk in responder.stream_response_chunks():
-            full_response += chunk
-            yield chunk
+        try:
+            for chunk in responder.stream_response_chunks():
+                full_response += chunk
+                yield chunk
+        except Exception as exc:
+            print(f"[chat_stream] LLM streaming error: {exc}")
+            yield f"\n\n[Error generating response: {exc}]"
 
-        # Send retrieved docs + optional HyDE doc to the client in one JSON blob.
+        # Always send docs + HyDE metadata so the UI can render them even if
+        # the LLM raised an error mid-stream.
         meta_payload = {
             "docs": doc_list_for_frontend,
             "hyde_doc": hyde_doc,
+            "hyde_requested": hyde_enabled,
         }
         yield f"<|DOCS_JSON|>{json.dumps(meta_payload)}"
 
