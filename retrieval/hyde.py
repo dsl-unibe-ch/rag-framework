@@ -53,7 +53,11 @@ def generate_hypothetical_document(
             temperature=0.7,
             stream=False,
         )
-        return response.choices[0].message.content.strip()
+        content = response.choices[0].message.content
+        if content is None:
+            # Fallback if the model put everything in reasoning_content
+            content = getattr(response.choices[0].message, 'reasoning_content', '') or ''
+        return content.strip()
     except Exception as exc:
         # Graceful degradation: fall back to the original query so retrieval
         # still proceeds even if the LLM call fails.

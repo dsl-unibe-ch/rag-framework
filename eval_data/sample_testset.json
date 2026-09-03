@@ -1,0 +1,14 @@
+[
+  {
+    "question": "What chunking methods does FRAG support?",
+    "ground_truth": "FRAG supports three chunking methods: sentence-based (fixed-size overlapping windows), semantic (embedding-based topic detection), and token-budget (greedily accumulates sentences until a token limit is reached)."
+  },
+  {
+    "question": "What file formats can be indexed?",
+    "ground_truth": "FRAG can index PDF, DOCX, HTML, HTM, Markdown (MD), TXT, and CSV files."
+  },
+  {
+    "question": "What is HyDE?",
+    "ground_truth": "HyDE (Hypothetical Document Embeddings) is a technique where the LLM generates a short hypothetical answer before retrieval. The hypothetical text is embedded instead of the raw question, which typically improves retrieval quality because generated answers are stylistically closer to stored document chunks."
+  }
+]

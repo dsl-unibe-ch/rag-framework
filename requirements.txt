@@ -12,3 +12,5 @@ python-docx==1.2.0
 tiktoken
 markdown-it-py
 rank-bm25
+ragas>=0.4.0
+langchain-community<0.4.2

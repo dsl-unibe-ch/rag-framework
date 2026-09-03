@@ -9,3 +9,8 @@ chroma_data
 !**/migrations/__init__.py
 
 .venv
+
+# evaluation files
+eval_results/
+eval_data/*
+!eval_data/sample_testset.json

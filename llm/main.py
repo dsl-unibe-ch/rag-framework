@@ -153,7 +153,8 @@ class OpenAIResponder:
                 temperature=0.7,
                 stream=False,
             )
-            return response.choices[0].message.content.strip()
+            content = response.choices[0].message.content
+            return content.strip() if content else ""
         except Exception as e:
             raise RuntimeError(f"An error occurred during response generation: {e}")
 
