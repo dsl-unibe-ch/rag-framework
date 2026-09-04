@@ -61,6 +61,14 @@ def cmd_run(args) -> None:
     # Parse configs from the CLI.
     configs = _parse_configs(args)
 
+    # Guard against phantom chunking evaluation
+    chunking_keys = {"chunk_size", "overlap_size", "chunking_method", "token_chunk_size", "semantic_breakpoint_percentile"}
+    for conf_name, overrides in configs.items():
+        if any(k in overrides for k in chunking_keys):
+            print(f"\nERROR in config '{conf_name}': You cannot override chunking settings via CLI.")
+            print("Evaluation uses the existing ChromaDB index. To evaluate different chunk sizes, you must update config/embedding_config.py and run vector_db_setup.py first.")
+            sys.exit(1)
+
     # Metrics.
     metric_names = args.metrics.split(",") if args.metrics else default_metrics
 
@@ -105,7 +113,7 @@ def _parse_configs(args) -> dict:
         return {"current": {}}
 
     configs = {}
-    current_name = None
+    current_name = "current"
     current_overrides = {}
 
     for token in args.config_and_set:

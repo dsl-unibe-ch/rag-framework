@@ -2,14 +2,11 @@
 
 Runs a test dataset through the RAG pipeline for one or more configuration
 profiles and scores the results with RAGAS metrics.
-
-The runner reuses the existing retriever classes (:class:`ChromaRetriever`,
-:class:`OpenAIChromaRetriever`) and responder classes (:class:`Responder`,
-:class:`OpenAIResponder`) so evaluation exercises the exact same code paths
-as the production chat and search features.
 """
 
 import os
+import re
+import asyncio
 from typing import Dict, List, Optional
 
 from dotenv import load_dotenv
@@ -26,7 +23,6 @@ from evaluation.report import (
 # Config override helpers
 # -----------------------------------------------------------------------
 
-# Keys that live in embedding_config
 _EMBEDDING_KEYS = {
     "model_name", "use_openai_embeddings", "openai_embedding_model",
     "openai_embedding_base_url", "vector_db", "collection_name", "raw_db",
@@ -38,7 +34,6 @@ _EMBEDDING_KEYS = {
     "use_hybrid_search", "hybrid_rrf_k", "hybrid_candidates",
 }
 
-# Keys that live in llm_config
 _LLM_KEYS = {
     "llm_model", "use_openai", "openai_model", "openai_base_url",
     "prompt", "record_data", "use_hyde",
@@ -46,11 +41,6 @@ _LLM_KEYS = {
 
 
 def _apply_overrides(overrides: Dict) -> Dict:
-    """Apply config overrides and return a dict of original values.
-
-    Temporarily patches the module-level variables in
-    ``config.embedding_config`` and ``config.llm_config``.
-    """
     import config.embedding_config as ec
     import config.llm_config as lc
 
@@ -68,7 +58,6 @@ def _apply_overrides(overrides: Dict) -> Dict:
 
 
 def _restore_overrides(originals: Dict) -> None:
-    """Restore config values from a dict returned by :func:`_apply_overrides`."""
     import config.embedding_config as ec
     import config.llm_config as lc
 
@@ -83,69 +72,101 @@ def _restore_overrides(originals: Dict) -> None:
 # RAGAS LLM judge setup
 # -----------------------------------------------------------------------
 
-def _build_ragas_llm(use_openai: bool, model: str, base_url: str,
-                     api_key: Optional[str]):
-    """Build a RAGAS-compatible LLM wrapper for scoring.
+def _build_ragas_llm(use_openai: bool, model: str, base_url: str, api_key: Optional[str]):
+    """Build a RAGAS-compatible LLM wrapper for scoring."""
+    from langchain_openai import ChatOpenAI
+    from ragas.llms import LangchainLLMWrapper
 
-    Uses ``ragas.llms.llm_factory`` with the user's configured LLM
-    backend so no additional API keys are needed.
+    if not use_openai:
+        api_key = "ollama"
+        base_url = "http://localhost:11434/v1"
 
-    .. note::
+    # Inject provider-specific parameters to disable reasoning models
+    model_kwargs = {}
+    chat_kwargs = {
+        "model": model,
+        "base_url": base_url,
+        "api_key": api_key,
+        "max_tokens": 4096,
+        "temperature": 0.7,
+    }
+    model_lower = model.lower()
+    if "gpt-5" in model_lower or "o1" in model_lower or "o3" in model_lower:
+        model_kwargs["reasoning"] = {"effort": "none"}
+    elif "minimax" in model_lower:
+        chat_kwargs["extra_body"] = {"thinking": {"type": "disabled"}}
+    elif "gpt-oss" in model_lower:
+        model_kwargs["reasoning_effort"] = "low"
 
-       "Thinking" models (e.g. QwQ, Qwen3 with ``think=True``) are
-       problematic as RAGAS judges because their reasoning tokens
-       consume the output budget, leaving too few tokens for the
-       structured JSON that RAGAS/instructor expects.  If you hit
-       ``InstructorRetryException`` or ``IncompleteOutputException``,
-       switch to a non-thinking judge model via ``--judge-model``.
-    """
-    from ragas.llms import llm_factory
-    from openai import OpenAI as _OpenAI
+    if model_kwargs:
+        chat_kwargs["model_kwargs"] = model_kwargs
 
-    if use_openai:
-        client = _OpenAI(api_key=api_key, base_url=base_url)
-    else:
-        # Ollama exposes an OpenAI-compatible endpoint at /v1
-        client = _OpenAI(
-            api_key="ollama",
-            base_url="http://localhost:11434/v1",
+    chat_model = ChatOpenAI(**chat_kwargs)
+
+    ragas_llm = LangchainLLMWrapper(chat_model)
+
+    # Monkey-patch Ragas wrapper to aggressively strip <think> tags from 
+    # both sync and async outputs before the JSON parser chokes on them.
+    original_generate_text = ragas_llm.generate_text
+    def _patched_generate_text(*args, **kwargs):
+        result = original_generate_text(*args, **kwargs)
+        for gen in result.generations:
+            for chunk in gen:
+                chunk.text = re.sub(r'<think>.*?</think>', '', chunk.text, flags=re.DOTALL).strip()
+        return result
+    ragas_llm.generate_text = _patched_generate_text
+
+    original_agenerate_text = ragas_llm.agenerate_text
+    async def _patched_agenerate_text(*args, **kwargs):
+        result = await original_agenerate_text(*args, **kwargs)
+        for gen in result.generations:
+            for chunk in gen:
+                chunk.text = re.sub(r'<think>.*?</think>', '', chunk.text, flags=re.DOTALL).strip()
+        return result
+    ragas_llm.agenerate_text = _patched_agenerate_text
+
+    return ragas_llm
+
+
+def _build_ragas_embeddings(ec, api_key: Optional[str]):
+    """Build RAGAS-compatible embeddings supporting async."""
+    if ec.use_openai_embeddings:
+        from langchain_openai import OpenAIEmbeddings
+        from ragas.embeddings import LangchainEmbeddingsWrapper
+        lc_emb = OpenAIEmbeddings(
+            model=ec.openai_embedding_model,
+            base_url=ec.openai_embedding_base_url,
+            api_key=api_key
         )
+        return LangchainEmbeddingsWrapper(lc_emb)
+    else:
+        from ragas.embeddings import BaseRagasEmbeddings
+        from retrieval.main import _ST_MODEL_CACHE
+        from sentence_transformers import SentenceTransformer
 
-    # ------------------------------------------------------------------
-    # HOTFIX for Thinking Models:
-    # We patch the client to automatically strip <think>...</think> tags 
-    # from the response content. We also inject a high max_tokens limit 
-    # to prevent reasoning tokens from exhausting the budget before the 
-    # required JSON is generated.
-    # ------------------------------------------------------------------
-    original_create = client.chat.completions.create
-    
-    def _patched_create(*args, **kwargs):
-        # Force a high token limit to accommodate reasoning + JSON
-        if "max_tokens" not in kwargs:
-            kwargs["max_tokens"] = 8192
+        class SharedLocalEmbeddings(BaseRagasEmbeddings):
+            """Reuses the existing loaded ST model and implements async methods."""
+            def __init__(self, model_name: str):
+                # self.model MUST be a string so Ragas telemetry validation doesn't crash
+                self.model = model_name 
+                if model_name not in _ST_MODEL_CACHE:
+                    _ST_MODEL_CACHE[model_name] = SentenceTransformer(model_name, trust_remote_code=True)
+                # Store the actual object under a different attribute
+                self.st_model = _ST_MODEL_CACHE[model_name]
 
-        resp = original_create(*args, **kwargs)
-        
-        # Strip <think> tags from the output so `instructor`'s JSON 
-        # parser doesn't choke on them.
-        import re
-        if hasattr(resp, "choices"):
-            for choice in resp.choices:
-                if getattr(choice, "message", None) and getattr(choice.message, "content", None):
-                    # Remove <think>...</think> including newlines
-                    clean_content = re.sub(
-                        r'<think>.*?</think>', '', 
-                        choice.message.content, 
-                        flags=re.DOTALL
-                    ).strip()
-                    choice.message.content = clean_content
+            def embed_query(self, text: str) -> list[float]:
+                return self.st_model.encode(text).tolist()
 
-        return resp
+            def embed_documents(self, texts: list[str]) -> list[list[float]]:
+                return self.st_model.encode(texts).tolist()
 
-    client.chat.completions.create = _patched_create
+            async def aembed_query(self, text: str) -> list[float]:
+                return await asyncio.to_thread(self.embed_query, text)
 
-    return llm_factory(model, provider="openai", client=client)
+            async def aembed_documents(self, texts: list[str]) -> list[list[float]]:
+                return await asyncio.to_thread(self.embed_documents, texts)
+
+        return SharedLocalEmbeddings(ec.model_name)
 
 
 # -----------------------------------------------------------------------
@@ -161,19 +182,6 @@ def _evaluate_config(
     judge_embeddings,
     env_path: str,
 ) -> ConfigResult:
-    """Run the RAG pipeline and RAGAS evaluation for one config profile.
-
-    Args:
-        config_name: Human-readable label for this config.
-        overrides: Config overrides to apply before the run.
-        samples: The test questions + ground truths.
-        metric_names: RAGAS metric names to compute.
-        judge_llm: The RAGAS LLM wrapper for scoring.
-        env_path: Path to the ``.env`` file.
-
-    Returns:
-        A :class:`ConfigResult` with aggregate and per-question scores.
-    """
     originals = _apply_overrides(overrides)
 
     try:
@@ -194,8 +202,6 @@ def _run_pipeline_and_score(
     judge_embeddings,
     env_path: str,
 ) -> ConfigResult:
-    """Internal implementation: retrieve + generate + score."""
-    # Re-import after overrides are applied so we read the patched values.
     import config.embedding_config as ec
     import config.llm_config as lc
     from retrieval.main import ChromaRetriever, OpenAIChromaRetriever
@@ -208,7 +214,6 @@ def _run_pipeline_and_score(
     load_dotenv(env_path)
     api_key = os.environ.get("OPENAI_API_KEY")
 
-    # --- Build retriever ---
     if ec.use_openai_embeddings:
         from openai import OpenAI as _OpenAI
         embed_client = _OpenAI(
@@ -230,29 +235,20 @@ def _run_pipeline_and_score(
             n_results=ec.n_results,
         )
 
-    # --- Process each question ---
     question_results: List[QuestionResult] = []
 
     for i, sample in enumerate(samples):
         print(f"    Q{i + 1}/{len(samples)}: {sample.question[:80]}...")
 
-        # Optional HyDE
         hyde_doc = None
         if lc.use_hyde:
             if lc.use_openai:
                 from openai import OpenAI as _OpenAI
-                hyde_client = _OpenAI(
-                    api_key=api_key, base_url=lc.openai_base_url,
-                )
-                hyde_doc = generate_hypothetical_document(
-                    sample.question, hyde_client, lc.openai_model,
-                )
+                hyde_client = _OpenAI(api_key=api_key, base_url=lc.openai_base_url)
+                hyde_doc = generate_hypothetical_document(sample.question, hyde_client, lc.openai_model)
             else:
-                hyde_doc = generate_hypothetical_document_ollama(
-                    sample.question, lc.llm_model,
-                )
+                hyde_doc = generate_hypothetical_document_ollama(sample.question, lc.llm_model)
 
-        # Retrieve
         search_results = retriever.retrieve(
             sample.question,
             embed_text=hyde_doc,
@@ -260,30 +256,21 @@ def _run_pipeline_and_score(
         )
         formatted_data = retriever.format_results_for_prompt(search_results)
 
-        # Extract raw context strings for RAGAS
         contexts: List[str] = []
-        if search_results and "documents" in search_results:
+        if search_results and "documents" in search_results and search_results["documents"]:
             contexts = search_results["documents"][0]
 
-        # Generate answer
         if lc.use_openai:
             from openai import OpenAI as _OpenAI
-            llm_client = _OpenAI(
-                api_key=api_key, base_url=lc.openai_base_url,
-            )
+            llm_client = _OpenAI(api_key=api_key, base_url=lc.openai_base_url)
             responder = OpenAIResponder(
-                data=formatted_data,
-                model=lc.openai_model,
-                prompt_template=lc.prompt,
-                query=sample.question,
-                client=llm_client,
+                data=formatted_data, model=lc.openai_model,
+                prompt_template=lc.prompt, query=sample.question, client=llm_client,
             )
         else:
             responder = Responder(
-                data=formatted_data,
-                model=lc.llm_model,
-                prompt_template=lc.prompt,
-                query=sample.question,
+                data=formatted_data, model=lc.llm_model,
+                prompt_template=lc.prompt, query=sample.question,
             )
 
         try:
@@ -297,16 +284,14 @@ def _run_pipeline_and_score(
             ground_truth=sample.ground_truth,
             answer=answer,
             retrieved_contexts=contexts,
-            scores={},  # filled in by RAGAS below
+            scores={},
         ))
 
-    # --- Score with RAGAS ---
     print(f"  Scoring {len(question_results)} answers with RAGAS...")
     aggregate, per_q_scores = _score_with_ragas(
         question_results, metric_names, judge_llm, judge_embeddings,
     )
 
-    # Merge per-question scores back into results.
     for qr, q_scores in zip(question_results, per_q_scores):
         qr.scores = q_scores
 
@@ -324,35 +309,25 @@ def _score_with_ragas(
     judge_llm,
     judge_embeddings,
 ) -> tuple:
-    """Run RAGAS evaluation and return (aggregate_dict, per_question_list).
-
-    Each metric is evaluated **independently** so that a failure in one
-    metric (e.g. the judge model producing invalid JSON for
-    ``answer_relevancy``) does not prevent the other metrics from being
-    reported.
-
-    Returns:
-        A tuple of ``(aggregate_scores, per_question_scores)`` where
-        ``aggregate_scores`` is a dict mapping metric names to floats and
-        ``per_question_scores`` is a list of dicts (one per question).
-    """
     from ragas import evaluate as ragas_evaluate
     from ragas.dataset_schema import SingleTurnSample, EvaluationDataset
+    from ragas.run_config import RunConfig
     import ragas.metrics as ragas_metrics
 
-    # Resolve metric objects from names.
-    valid_metrics: List[tuple] = []  # (name, metric_obj)
+    valid_metrics = []
     for name in metric_names:
         metric_obj = getattr(ragas_metrics, name, None)
         if metric_obj is None:
             print(f"  Warning: unknown RAGAS metric '{name}' — skipped.")
             continue
-        
-        # FIX: RAGAS 0.4.x answer_relevancy requests 3 generations (strictness=3) by default.
-        # When using instructor for structured outputs, it flattens the output to 1 generation,
-        # which causes massive warning spam ("LLM returned 1 generations instead of requested 3").
         if name == "answer_relevancy" and hasattr(metric_obj, "strictness"):
             metric_obj.strictness = 1
+            
+        # Explicitly assign llm and embeddings to avoid Ragas fallback bugs
+        if hasattr(metric_obj, "llm"):
+            metric_obj.llm = judge_llm
+        if hasattr(metric_obj, "embeddings"):
+            metric_obj.embeddings = judge_embeddings
             
         valid_metrics.append((name, metric_obj))
 
@@ -360,76 +335,54 @@ def _score_with_ragas(
         print("  No valid metrics to evaluate.")
         return {}, [{} for _ in question_results]
 
-    # Build RAGAS dataset.
     ragas_samples = []
     for qr in question_results:
+        # Fallback to prevent tokenization crashes on empty results
+        ctx = qr.retrieved_contexts if qr.retrieved_contexts else ["No context retrieved"]
         ragas_samples.append(SingleTurnSample(
             user_input=qr.question,
-            retrieved_contexts=qr.retrieved_contexts or [""],
+            retrieved_contexts=ctx,
             response=qr.answer,
             reference=qr.ground_truth,
         ))
 
     dataset = EvaluationDataset(samples=ragas_samples)
+    aggregate = {name: None for name, _ in valid_metrics}
+    per_q_scores = [{} for _ in question_results]
 
-    # ------------------------------------------------------------------
-    # Evaluate each metric independently for resilience.
-    # Thinking models (QwQ, Qwen3, etc.) often fail on specific metrics
-    # (especially answer_relevancy) while succeeding on others.
-    # ------------------------------------------------------------------
-    aggregate: Dict[str, Optional[float]] = {}
-    per_q_scores: List[Dict[str, Optional[float]]] = [
-        {} for _ in question_results
-    ]
+    try:
+        results = ragas_evaluate(
+            dataset=dataset,
+            metrics=[m[1] for m in valid_metrics],
+            llm=judge_llm,
+            embeddings=judge_embeddings,
+            run_config=RunConfig(max_workers=2, timeout=600),
+            raise_exceptions=False,
+        )
 
-    for metric_name, metric_obj in valid_metrics:
-        print(f"    Scoring metric: {metric_name}...")
-        try:
-            results = ragas_evaluate(
-                dataset=dataset,
-                metrics=[metric_obj],
-                llm=judge_llm,
-                embeddings=judge_embeddings,
-            )
-
-            # Extract per-question scores and compute aggregate.
-            try:
-                df = results.to_pandas()
+        df = results.to_pandas()
+        for name, _ in valid_metrics:
+            if name in df.columns:
                 col_vals = []
-                for idx, (_, row) in enumerate(df.iterrows()):
-                    val = row.get(metric_name)
-                    if val is not None:
-                        try:
-                            f_val = float(val)
-                            per_q_scores[idx][metric_name] = f_val
-                            import math
-                            if not math.isnan(f_val):
-                                col_vals.append(f_val)
-                        except (TypeError, ValueError):
-                            per_q_scores[idx][metric_name] = None
-                    else:
-                        per_q_scores[idx][metric_name] = None
+                for idx, row in df.iterrows():
+                    val = row.get(name)
+                    try:
+                        f_val = float(val)
+                        per_q_scores[idx][name] = f_val
+                        import math
+                        if not math.isnan(f_val):
+                            col_vals.append(f_val)
+                    except (TypeError, ValueError):
+                        per_q_scores[idx][name] = None
                 
-                if col_vals:
-                    aggregate[metric_name] = sum(col_vals) / len(col_vals)
-                else:
-                    aggregate[metric_name] = None
-            except Exception:
-                for idx in range(len(question_results)):
-                    per_q_scores[idx][metric_name] = None
-                aggregate[metric_name] = None
+                aggregate[name] = sum(col_vals) / len(col_vals) if col_vals else None
+                score_str = f"{aggregate[name]:.4f}" if aggregate[name] is not None else "N/A"
+                print(f"      {name}: {score_str}")
 
-            score_str = f"{aggregate[metric_name]:.4f}" if aggregate[metric_name] is not None else "N/A"
-            print(f"      {metric_name}: {score_str}")
-
-        except Exception as exc:
-            import traceback
-            short_err = str(exc)[:200]
-            print(f"      {metric_name}: FAILED — {short_err}")
-            print(f"      Traceback: {traceback.format_exc()}")
-            aggregate[metric_name] = None
-            for idx in range(len(question_results)):
-                per_q_scores[idx][metric_name] = None
+    except Exception as exc:
+        print(f"      Evaluation batch failed: {exc}")
+        import traceback
+        print(traceback.format_exc())
 
     return aggregate, per_q_scores
 
@@ -448,22 +401,6 @@ def run_evaluation(
     judge_model_override: Optional[str] = None,
     judge_base_url_override: Optional[str] = None,
 ) -> EvalReport:
-    """Run the full evaluation pipeline.
-
-    Args:
-        testset_path: Path to the test-set file (for the report).
-        samples: Loaded test samples.
-        configs: Dict mapping config names to override dicts.
-        metric_names: RAGAS metric names to compute.
-        env_path: Path to the ``.env`` file.
-        config_filter: If set, only run these config names.
-        judge_model_override: If set, use this model as the RAGAS judge
-            instead of the one in eval_config / llm_config.
-        judge_base_url_override: If set, use this base URL for the judge.
-
-    Returns:
-        An :class:`EvalReport` with results for all requested configs.
-    """
     import config.llm_config as lc
     import config.eval_config as evc
     import config.embedding_config as ec
@@ -471,16 +408,10 @@ def run_evaluation(
     load_dotenv(env_path)
     api_key = os.environ.get("OPENAI_API_KEY")
 
-    # Determine the judge LLM model.
     judge_model_name = (
-        judge_model_override
-        or evc.judge_model
-        or (lc.openai_model if lc.use_openai else lc.llm_model)
+        judge_model_override or evc.judge_model or (lc.openai_model if lc.use_openai else lc.llm_model)
     )
-    judge_base_url = (
-        judge_base_url_override
-        or (lc.openai_base_url if lc.use_openai else None)
-    )
+    judge_base_url = judge_base_url_override or (lc.openai_base_url if lc.use_openai else None)
 
     print(f"\n--- RAGAS Evaluation ---")
     print(f"  Test set    : {testset_path} ({len(samples)} questions)")
@@ -488,15 +419,12 @@ def run_evaluation(
     print(f"  Judge LLM   : {judge_model_name}")
     print(f"  Configs     : {', '.join(configs.keys())}")
 
-    # Build the RAGAS judge LLM.
     judge_llm = _build_ragas_llm(
         use_openai=lc.use_openai,
         model=judge_model_name,
         base_url=judge_base_url or "http://localhost:11434/v1",
         api_key=api_key,
     )
-
-    # Build RAGAS embeddings (needed for answer_relevancy metric).
     judge_embeddings = _build_ragas_embeddings(ec, api_key)
 
     report = EvalReport(
@@ -505,13 +433,9 @@ def run_evaluation(
         metrics=metric_names,
     )
 
-    # Filter configs if requested.
     run_configs = configs
     if config_filter:
         run_configs = {k: v for k, v in configs.items() if k in config_filter}
-        missing = set(config_filter) - set(run_configs.keys())
-        if missing:
-            print(f"  Warning: config(s) not found: {missing}")
 
     for i, (name, overrides) in enumerate(run_configs.items()):
         print(f"\n[{i + 1}/{len(run_configs)}] Evaluating config: {name}")
@@ -519,40 +443,10 @@ def run_evaluation(
             print(f"  Overrides: {overrides}")
 
         result = _evaluate_config(
-            config_name=name,
-            overrides=overrides,
-            samples=samples,
-            metric_names=metric_names,
-            judge_llm=judge_llm,
-            judge_embeddings=judge_embeddings,
-            env_path=env_path,
+            config_name=name, overrides=overrides, samples=samples,
+            metric_names=metric_names, judge_llm=judge_llm,
+            judge_embeddings=judge_embeddings, env_path=env_path,
         )
         report.configs.append(result)
 
     return report
-
-
-def _build_ragas_embeddings(ec, api_key: Optional[str]):
-    """Build RAGAS-compatible embeddings from the embedding config.
-
-    Required by metrics like ``answer_relevancy`` that need to embed
-    generated questions for comparison.
-    """
-    try:
-        if ec.use_openai_embeddings:
-            from langchain_openai import OpenAIEmbeddings
-            from ragas.embeddings import LangchainEmbeddingsWrapper
-            # Use LangChain's wrapper because it reliably provides embed_query
-            lc_emb = OpenAIEmbeddings(
-                model=ec.openai_embedding_model,
-                openai_api_base=ec.openai_embedding_base_url,
-                openai_api_key=api_key
-            )
-            return LangchainEmbeddingsWrapper(lc_emb)
-        else:
-            from ragas.embeddings import HuggingfaceEmbeddings
-            return HuggingfaceEmbeddings(model_name=ec.model_name)
-    except Exception as exc:
-        print(f"  Warning: could not build RAGAS embeddings: {exc}")
-        print(f"  Metrics requiring embeddings (answer_relevancy) may fail.")
-        return None
