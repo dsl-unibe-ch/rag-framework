@@ -96,7 +96,7 @@ def _build_ragas_llm(use_openai: bool, model: str, base_url: str, api_key: Optio
     elif "minimax" in model_lower:
         chat_kwargs["extra_body"] = {"thinking": {"type": "disabled"}}
     elif "gpt-oss" in model_lower:
-        model_kwargs["reasoning_effort"] = "low"
+        chat_kwargs["reasoning_effort"] = "low"
 
     if model_kwargs:
         chat_kwargs["model_kwargs"] = model_kwargs
