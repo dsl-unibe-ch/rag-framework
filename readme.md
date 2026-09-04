@@ -1,10 +1,6 @@
 ## Framewrok for RAG (FRAG)
 
-## ⚠️ Important Note
 
-This project is still under active development and should be considered in a pre-release state. It has not been thoroughly tested yet, and some features may be incomplete or unstable. Use it at your own discretion and report any issues or bugs.
-
-Contributions, feedback, and suggestions are welcome as we work toward a stable release!
 
 
 
@@ -74,7 +70,7 @@ This repository contains a Retrieval-Augmented Generation (RAG) framework for ef
     ```python
     import os
 
-    model_name = "Lajavaness/bilingual-embedding-large"  
+    model_name = "BAAI/bge-m3"  
 
     # settings if using openai embeddings api or any openai compatible embedding api
     use_openai_embeddings = False # set to True if you want to use openai embeddings api
@@ -140,6 +136,8 @@ This repository contains a Retrieval-Augmented Generation (RAG) framework for ef
     """
 
     record_data = False # set to true to record chat log
+    
+    use_hyde = False # enable Hypothetical Document Embeddings for better retrieval
     ```
 
 7.  **Run the system:**
@@ -157,4 +155,10 @@ This repository contains a Retrieval-Augmented Generation (RAG) framework for ef
     *   To use the command-line tools:
 
     *   The functionalities are likely defined in the `cl-tools` directory (chat.py and search.py). You can refer to those files to understand how to use the command-line interface for chat and search.
+
+8.  **Evaluating your RAG Pipeline (Ragas):**
+
+    *   This framework includes powerful built-in evaluation tools based on the **RAGAS** metric suite (Faithfulness, Answer Relevancy, Context Precision, and Context Recall).
+    *   You can automatically generate synthetic test datasets, run evaluations against your configured models and vector databases, and A/B test different configurations.
+    *   For comprehensive instructions on how to use the evaluation tools, please refer to the detailed guide in [`cl-tools/README.md`](cl-tools/README.md).
 
