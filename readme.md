@@ -24,24 +24,26 @@ This repository contains a Retrieval-Augmented Generation (RAG) framework for ef
 
 **Steps:**
 
-1.  **Create virtual environment:**
+1.  **Install uv (Package Manager):**
 
     ```bash
-    python -m venv venv
+    curl -LsSf https://astral.sh/uv/install.sh | sh
     ```
 
-2.  **Activate virtual environment:**
+2.  **Install dependencies:**
 
     ```bash
-    source venv/bin/activate # For Linux/macOS
-    venv\Scripts\activate # For Windows
+    uv sync
     ```
+    *(This automatically creates a virtual environment in `.venv` and installs all dependencies instantly).*
 
-3.  **Install packages:**
+3.  **Activate virtual environment:**
 
     ```bash
-    pip install -r requirement.txt
+    source .venv/bin/activate # For Linux/macOS
+    .venv\Scripts\activate # For Windows
     ```
+    *(Alternatively, you can skip activation and just prepend `uv run` to any command, e.g., `uv run python ...`)*
 
 4.  **Add a vector database:**
 
