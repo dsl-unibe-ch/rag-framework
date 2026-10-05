@@ -98,119 +98,150 @@
             body: formData,
         })
         .then(response => {
+            if (!response.ok) {
+                // Server returned an error status — show it to the user.
+                return response.text().then(text => {
+                    let msg = `Server error (${response.status})`;
+                    try { msg += ': ' + JSON.parse(text).error; } catch (_) { msg += ': ' + text; }
+                    botResponseElem.textContent = msg;
+                    botResponseElem.style.color = '#c0392b';
+                });
+            }
             if (!response.body) {
                 throw new Error("ReadableStream not yet supported in this browser.");
             }
             const reader = response.body.getReader();
             const decoder = new TextDecoder('utf-8');
-            // buffer accumulates ALL received bytes across reads.
-            // We never reset it so the <|DOCS_JSON|> marker is detected
-            // even if it straddles two consecutive network reads.
             let buffer = '';
-            // Track how many chars of buffer we have already displayed.
             let displayed = 0;
+
+            // Render documents & HyDE metadata from a fully parsed payload.
+            function renderDocsPayload(metaPayload) {
+                const docsData = metaPayload.docs || [];
+                const hydeDoc  = metaPayload.hyde_doc || null;
+                const hydeRequested = metaPayload.hyde_requested || false;
+                const hybridUsed    = metaPayload.hybrid_used || false;
+
+                if (hydeDoc) {
+                    const hydeToggle = document.createElement('a');
+                    hydeToggle.href = '#';
+                    hydeToggle.className = 'hyde-toggle-link';
+                    hydeToggle.textContent = 'Hide hypothetical document (HyDE ▲)';
+
+                    const hydeBox = document.createElement('div');
+                    hydeBox.className = 'hyde-content';
+                    hydeBox.style.display = 'block';
+                    hydeBox.textContent = hydeDoc;
+
+                    hydeToggle.addEventListener('click', function(e) {
+                        e.preventDefault();
+                        const hidden = hydeBox.style.display === 'none';
+                        hydeBox.style.display = hidden ? 'block' : 'none';
+                        hydeToggle.textContent = hidden
+                            ? 'Hide hypothetical document (HyDE ▲)'
+                            : 'View hypothetical document used for retrieval (HyDE ▼)';
+                    });
+
+                    botMsgDiv.insertBefore(hydeToggle, docsToggleLink);
+                    botMsgDiv.insertBefore(hydeBox,    docsToggleLink);
+                } else if (hydeRequested) {
+                    const hydeWarn = document.createElement('p');
+                    hydeWarn.className = 'hyde-label-text';
+                    hydeWarn.textContent = '⚠️ HyDE was enabled but hypothesis generation failed. Raw query used for retrieval.';
+                    botMsgDiv.insertBefore(hydeWarn, docsToggleLink);
+                }
+
+                if (hybridUsed) {
+                    const hybridBadge = document.createElement('p');
+                    hybridBadge.className = 'hyde-label-text';
+                    hybridBadge.textContent = '\u26a1 Hybrid search (BM25 + Vector) was used for retrieval.';
+                    botMsgDiv.insertBefore(hybridBadge, docsToggleLink);
+                }
+
+                if (docsData.length > 0) {
+                    docsToggleLink.style.display = 'inline-block';
+                    let html = '';
+                    docsData.forEach((doc, idx) => {
+                        html += `
+                            <div class="single-doc">
+                                <p><strong>Document ${idx + 1}</strong></p>
+                                <p><strong>File Name:</strong> ${doc.file_name}</p>
+                                <p><strong>Chunk ID:</strong> ${doc.chunk_id}</p>
+                                ${doc.page_number != null ? `<p><strong>Page:</strong> ${doc.page_number}</p>` : ''}
+                                ${doc.section_title ? `<p><strong>Section:</strong> ${doc.section_title}</p>` : ''}
+                                ${doc.source_url ? `<p><strong>Source:</strong> <a href="${doc.source_url}" target="_blank">${doc.source_url}</a></p>` : ''}
+                                ${doc.ingest_date ? `<p><strong>Indexed:</strong> ${doc.ingest_date}</p>` : ''}
+                                <pre>${doc.content}</pre>
+                            </div>
+                            <hr/>
+                        `;
+                    });
+                    docsContainer.innerHTML = html;
+                }
+            }
+
+            // Try to extract and parse the <|DOCS_JSON|> payload from
+            // the buffer.  Returns true when the payload was complete
+            // and successfully rendered, false otherwise.
+            function tryProcessMarker() {
+                const MARKER = '<|DOCS_JSON|>';
+                const markerIndex = buffer.indexOf(MARKER);
+                if (markerIndex === -1) return false;
+
+                // Show any LLM text before the marker.
+                const beforeMarker = buffer.slice(displayed, markerIndex);
+                if (beforeMarker) {
+                    botResponseElem.textContent += beforeMarker;
+                    chatBox.scrollTop = chatBox.scrollHeight;
+                }
+                displayed = markerIndex;  // freeze display at marker
+
+                const docsText = buffer.slice(markerIndex + MARKER.length);
+                try {
+                    const metaPayload = JSON.parse(docsText);
+                    renderDocsPayload(metaPayload);
+                    return true;   // fully parsed
+                } catch (_) {
+                    return false;  // JSON incomplete — keep reading
+                }
+            }
 
             function readChunk() {
                 return reader.read().then(({ done, value }) => {
-                    if (done) return;
+                    if (value) {
+                        buffer += decoder.decode(value, {stream: true});
+                    }
+                    if (done) {
+                        buffer += decoder.decode();
+                    }
 
-                    buffer += decoder.decode(value, {stream: true});
+                    let newlineIdx;
+                    while ((newlineIdx = buffer.indexOf('\n')) !== -1) {
+                        const line = buffer.slice(0, newlineIdx).trim();
+                        buffer = buffer.slice(newlineIdx + 1);
+                        if (!line) continue;
 
-                    const markerIndex = buffer.indexOf('<|DOCS_JSON|>');
-                    if (markerIndex !== -1) {
-                        // Display any LLM text that came before the marker
-                        // and hasn't been shown yet.
-                        const beforeMarker = buffer.slice(displayed, markerIndex);
-                        if (beforeMarker) {
-                            botResponseElem.textContent += beforeMarker;
-                            chatBox.scrollTop = chatBox.scrollHeight;
-                        }
-
-                        const docsText = buffer.slice(markerIndex + '<|DOCS_JSON|>'.length);
-                        let docsData = [];
-                        let hydeDoc  = null;
-                        let metaPayload = null;
                         try {
-                            metaPayload = JSON.parse(docsText);
-                            docsData = metaPayload.docs     || [];
-                            hydeDoc  = metaPayload.hyde_doc || null;
+                            const msg = JSON.parse(line);
+                            if (msg.type === 'docs') {
+                                renderDocsPayload(msg.data);
+                            } else if (msg.type === 'chunk') {
+                                botResponseElem.textContent += msg.data;
+                                chatBox.scrollTop = chatBox.scrollHeight;
+                            } else if (msg.type === 'error') {
+                                const errElem = document.createElement('p');
+                                errElem.textContent = `⚠️ Error: ${msg.data}`;
+                                errElem.style.color = '#c0392b';
+                                botMsgDiv.appendChild(errElem);
+                            }
                         } catch (e) {
-                            console.error('[RAG] Error parsing DOCS_JSON:', e, 'raw:', docsText);
+                            console.error('JSON parse error on line:', line, e);
                         }
-
-                        // Collapsible HyDE section
-                        const hydeRequested = metaPayload ? (metaPayload.hyde_requested || false) : false;
-                        if (hydeDoc) {
-                            const hydeToggle = document.createElement('a');
-                            hydeToggle.href = '#';
-                            hydeToggle.className = 'hyde-toggle-link';
-                            hydeToggle.textContent = 'Hide hypothetical document (HyDE ▲)';
-
-                            const hydeBox = document.createElement('div');
-                            hydeBox.className = 'hyde-content';
-                            hydeBox.style.display = 'block';
-                            hydeBox.textContent = hydeDoc;
-
-                            hydeToggle.addEventListener('click', function(e) {
-                                e.preventDefault();
-                                const hidden = hydeBox.style.display === 'none';
-                                hydeBox.style.display = hidden ? 'block' : 'none';
-                                hydeToggle.textContent = hidden
-                                    ? 'Hide hypothetical document (HyDE ▲)'
-                                    : 'View hypothetical document used for retrieval (HyDE ▼)';
-                            });
-
-                            botMsgDiv.insertBefore(hydeToggle, docsToggleLink);
-                            botMsgDiv.insertBefore(hydeBox,    docsToggleLink);
-                        } else if (hydeRequested) {
-                            // HyDE was enabled but generation failed
-                            const hydeWarn = document.createElement('p');
-                            hydeWarn.className = 'hyde-label-text';
-                            hydeWarn.textContent = '⚠️ HyDE was enabled but hypothesis generation failed. Raw query used for retrieval.';
-                            botMsgDiv.insertBefore(hydeWarn, docsToggleLink);
-                        }
-
-                        // Hybrid search badge
-                        const hybridUsed = metaPayload ? (metaPayload.hybrid_used || false) : false;
-                        if (hybridUsed) {
-                            const hybridBadge = document.createElement('p');
-                            hybridBadge.className = 'hyde-label-text';
-                            hybridBadge.textContent = '\u26a1 Hybrid search (BM25 + Vector) was used for retrieval.';
-                            botMsgDiv.insertBefore(hybridBadge, docsToggleLink);
-                        }
-
-                        // Collapsible retrieved documents section
-                        if (docsData.length > 0) {
-                            docsToggleLink.style.display = 'inline-block';
-                            let html = '';
-                            docsData.forEach((doc, idx) => {
-                                html += `
-                                    <div class="single-doc">
-                                        <p><strong>Document ${idx + 1}</strong></p>
-                                        <p><strong>File Name:</strong> ${doc.file_name}</p>
-                                        <p><strong>Chunk ID:</strong> ${doc.chunk_id}</p>
-                                        ${doc.page_number != null ? `<p><strong>Page:</strong> ${doc.page_number}</p>` : ''}
-                                        ${doc.section_title ? `<p><strong>Section:</strong> ${doc.section_title}</p>` : ''}
-                                        ${doc.source_url ? `<p><strong>Source:</strong> <a href="${doc.source_url}" target="_blank">${doc.source_url}</a></p>` : ''}
-                                        ${doc.ingest_date ? `<p><strong>Indexed:</strong> ${doc.ingest_date}</p>` : ''}
-                                        <pre>${doc.content}</pre>
-                                    </div>
-                                    <hr/>
-                                `;
-                            });
-                            docsContainer.innerHTML = html;
-                        }
-                        return; // done reading
                     }
 
-                    // No marker yet: display only the new bytes we haven't shown.
-                    const newText = buffer.slice(displayed);
-                    if (newText) {
-                        botResponseElem.textContent += newText;
-                        chatBox.scrollTop = chatBox.scrollHeight;
+                    if (!done) {
+                        return readChunk();
                     }
-                    displayed = buffer.length;
-                    return readChunk();
                 });
             }
 
@@ -218,6 +249,8 @@
         })
         .catch(err => {
             console.error("Error fetching streaming response:", err);
+            botResponseElem.textContent = `Connection error: ${err.message}`;
+            botResponseElem.style.color = '#c0392b';
         });
     });
 </script>

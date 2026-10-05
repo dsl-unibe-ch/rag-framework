@@ -36,6 +36,20 @@ from openai import OpenAI
 import os
 import json
 
+# ---------------------------------------------------------------------------
+# Load .env once at module level so every view shares the same environment.
+# This avoids repeated load_dotenv() calls that can pick up stale or
+# malformed values (e.g. trailing \r from CRLF line endings).
+# ---------------------------------------------------------------------------
+load_dotenv(os.path.join(settings.BASE_DIR.parent, '.env'))
+
+_OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
+
+
+def _get_openai_client(base_url: str) -> OpenAI:
+    """Return an OpenAI client using the shared API key."""
+    return OpenAI(api_key=_OPENAI_API_KEY, base_url=base_url)
+
 
 def home(request):
     footer_class = 'footer-absolute'
@@ -66,11 +80,7 @@ def search(request):
         hybrid_enabled = (ui_hybrid == '1') if ui_hybrid is not None else config_use_hybrid
 
         if use_openai_embeddings:
-            load_dotenv(os.path.join(settings.BASE_DIR.parent, '.env'))
-            openai_client = OpenAI(
-                api_key=os.environ.get("OPENAI_API_KEY"),
-                base_url=openai_embedding_base_url,
-            )
+            openai_client = _get_openai_client(openai_embedding_base_url)
             try:
                 retriever = OpenAIChromaRetriever(
                     openai_client=openai_client,
@@ -95,11 +105,7 @@ def search(request):
         # Generate hypothetical document when HyDE is active.
         if hyde_enabled:
             if use_openai:
-                load_dotenv(os.path.join(settings.BASE_DIR.parent, '.env'))
-                hyde_client = OpenAI(
-                    api_key=os.environ.get("OPENAI_API_KEY"),
-                    base_url=openai_base_url,
-                )
+                hyde_client = _get_openai_client(openai_base_url)
                 hyde_doc = generate_hypothetical_document(query, hyde_client, openai_model)
             else:
                 hyde_doc = generate_hypothetical_document_ollama(query, llm_model)
@@ -205,11 +211,7 @@ def chat_stream(request):
     hyde_doc = None
     if hyde_enabled:
         if use_openai:
-            load_dotenv(os.path.join(settings.BASE_DIR.parent, '.env'))
-            hyde_client = OpenAI(
-                api_key=os.environ.get("OPENAI_API_KEY"),
-                base_url=openai_base_url,
-            )
+            hyde_client = _get_openai_client(openai_base_url)
             hyde_doc = generate_hypothetical_document(user_query, hyde_client, openai_model)
         else:
             hyde_doc = generate_hypothetical_document_ollama(user_query, llm_model)
@@ -217,11 +219,7 @@ def chat_stream(request):
     # -- 1) Build retriever
     try:
         if use_openai_embeddings:
-            load_dotenv(os.path.join(settings.BASE_DIR.parent, '.env'))
-            openai_client = OpenAI(
-                api_key=os.environ.get("OPENAI_API_KEY"),
-                base_url=openai_embedding_base_url,
-            )
+            openai_client = _get_openai_client(openai_embedding_base_url)
             retriever = OpenAIChromaRetriever(
                 openai_client=openai_client,
                 embedding_model=openai_embedding_model,
@@ -264,17 +262,13 @@ def chat_stream(request):
 
     # -- 3) Build LLM responder
     if use_openai:
-        load_dotenv(os.path.join(settings.BASE_DIR.parent, '.env'))
-        openai_client = OpenAI(
-            api_key=os.environ.get("OPENAI_API_KEY"),
-            base_url=openai_base_url,
-        )
+        llm_client = _get_openai_client(openai_base_url)
         responder = OpenAIResponder(
             data=formatted_result,
             model=openai_model,
             prompt_template=prompt,
             query=user_query,
-            client=openai_client,
+            client=llm_client,
         )
     else:
         responder = Responder(
@@ -286,24 +280,29 @@ def chat_stream(request):
 
     # -- 4) Streaming generator
     def stream_generator():
+        # Always send docs + HyDE metadata FIRST so the UI can render them 
+        # immediately and they are not lost if the LLM times out mid-stream.
+        meta_payload = {
+            "type": "docs",
+            "data": {
+                "docs": doc_list_for_frontend,
+                "hyde_doc": hyde_doc,
+                "hyde_requested": hyde_enabled,
+                "hybrid_used": hybrid_enabled,
+            }
+        }
+        yield json.dumps(meta_payload) + "\n"
+
         full_response = ""
         try:
             for chunk in responder.stream_response_chunks():
                 full_response += chunk
-                yield chunk
+                yield json.dumps({"type": "chunk", "data": chunk}) + "\n"
         except Exception as exc:
             print(f"[chat_stream] LLM streaming error: {exc}")
-            yield f"\n\n[Error generating response: {exc}]"
+            yield json.dumps({"type": "error", "data": str(exc)}) + "\n"
 
-        # Always send docs + HyDE metadata so the UI can render them even if
-        # the LLM raised an error mid-stream.
-        meta_payload = {
-            "docs": doc_list_for_frontend,
-            "hyde_doc": hyde_doc,
-            "hyde_requested": hyde_enabled,
-            "hybrid_used": hybrid_enabled,
-        }
-        yield f"<|DOCS_JSON|>{json.dumps(meta_payload)}"
+        yield json.dumps({"type": "done"}) + "\n"
 
         if record_data:
             ChatLog.objects.create(
@@ -311,4 +310,7 @@ def chat_stream(request):
                 response=full_response,
             )
 
-    return StreamingHttpResponse(stream_generator(), content_type='text/plain')
+    response = StreamingHttpResponse(stream_generator(), content_type='application/x-ndjson')
+    response['Cache-Control'] = 'no-cache'
+    response['X-Accel-Buffering'] = 'no'  # Disable buffering in nginx/reverse proxies
+    return response
