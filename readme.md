@@ -33,7 +33,8 @@ This repository contains a Retrieval-Augmented Generation (RAG) framework for ef
 2.  **Install dependencies:**
 
     ```bash
-    uv sync
+    uv venv 
+    uv pip install -r requirements.txt
     ```
     *(This automatically creates a virtual environment in `.venv` and installs all dependencies instantly).*
 
