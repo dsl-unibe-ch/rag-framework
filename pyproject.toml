@@ -9,7 +9,7 @@ authors = [
 requires-python = ">=3.12"
 dependencies = [
     "chromadb==1.5.9",
-    "django==6.0.6",
+    "django==6.0.8",
     "django-environ==0.13.0",
     "langchain-community<0.4.2",
     "markdown-it-py>=4.2.0",
